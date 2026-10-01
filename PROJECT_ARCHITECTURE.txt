@@ -1,0 +1,323 @@
+================================================================================
+AUDIO RECORDER & STUDIO - FULL PROJECT ARCHITECTURE & COMPONENT GUIDE
+================================================================================
+
+1. DIRECTORY TREE STRUCTURE
+--------------------------------------------------------------------------------
+app/src/main/
+├── AndroidManifest.xml
+├── java/com/example/audiorecorder/
+│   │
+│   ├── MainActivity.kt
+│   │
+│   ├── audio/
+│   │   ├── engine/
+│   │   │   ├── AudioCaptureEngine.kt
+│   │   │   ├── AudioPlaybackEngine.kt
+│   │   │   └── AudioRecordingService.kt
+│   │   ├── hardware/
+│   │   │   ├── MicrophoneManager.kt
+│   │   │   └── AudioPreset.kt
+│   │   ├── scratchpad/
+│   │   │   ├── ScratchpadManager.kt
+│   │   │   ├── PunchAndRollEngine.kt
+│   │   │   └── CrashRecoverySentinel.kt
+│   │   ├── codec/
+│   │   │   ├── WavHeaderWriter.kt
+│   │   │   ├── MediaCodecDecoder.kt
+│   │   │   └── MediaCodecEncoder.kt
+│   │   └── dsp/
+│   │       ├── DbfsCalculator.kt
+│   │       ├── VoiceActivityDetector.kt
+│   │       └── AudioFilters.kt
+│   │
+│   ├── data/
+│   │   ├── db/
+│   │   │   ├── AppDatabase.kt
+│   │   │   ├── RecordingDao.kt
+│   │   │   └── RecordingEntity.kt
+│   │   ├── model/
+│   │   │   ├── Marker.kt
+│   │   │   └── Script.kt
+│   │   └── repository/
+│   │       ├── RecordingRepository.kt
+│   │       └── FileExporter.kt
+│   │
+│   ├── ui/
+│   │   ├── library/
+│   │   │   ├── LibraryFragment.kt
+│   │   │   ├── LibraryViewModel.kt
+│   │   │   └── RecordingAdapter.kt
+│   │   ├── studio/
+│   │   │   ├── StudioFragment.kt
+│   │   │   └── StudioViewModel.kt
+│   │   ├── customviews/
+│   │   │   ├── WaveformVisualizerView.kt
+│   │   │   ├── DbfsMeterView.kt
+│   │   │   └── TeleprompterView.kt
+│   │   └── dialogs/
+│   │       ├── MicSelectionDialog.kt
+│   │       ├── PresetSelectionDialog.kt
+│   │       └── ScriptEditorDialog.kt
+│   │
+│   └── util/
+│       ├── PermissionHelper.kt
+│       └── TimecodeFormatter.kt
+│
+└── res/
+    ├── layout/
+    │   ├── activity_main.xml
+    │   ├── fragment_library.xml
+    │   ├── fragment_studio.xml
+    │   ├── item_recording_card.xml
+    │   ├── dialog_mic_selection.xml
+    │   └── dialog_presets.xml
+    ├── values/
+    │   ├── strings.xml
+    │   ├── colors.xml
+    │   ├── themes.xml
+    │   └── dimens.xml
+    ├── drawable/
+    └── xml/
+        └── file_paths.xml
+
+
+================================================================================
+2. COMPONENT RESPONSIBILITIES & MODULE EXPLANATIONS
+================================================================================
+
+--------------------------------------------------------------------------------
+ROOT APP LEVEL
+--------------------------------------------------------------------------------
+• AndroidManifest.xml
+  Declares Android permissions (RECORD_AUDIO, POST_NOTIFICATIONS, FOREGROUND_SERVICE),
+  registers the AudioRecordingService, configures FileProvider paths for sharing,
+  and locks MainActivity to portrait orientation across phones and tablets.
+
+• MainActivity.kt
+  The single host activity. Manages top-level navigation between LibraryFragment
+  and StudioFragment, requests runtime permissions, and houses the persistent
+  circular recording button dock that overlays both screens.
+
+
+--------------------------------------------------------------------------------
+AUDIO ENGINE LAYER (com.example.audiorecorder.audio.*)
+Decoupled completely from Android Views and UI logic; operates on raw audio streams.
+--------------------------------------------------------------------------------
+
+[ engine/ ]
+• AudioCaptureEngine.kt
+  Direct wrapper around android.media.AudioRecord. Configures hardware buffers,
+  initializes recording in AudioFormat.ENCODING_PCM_FLOAT, runs a dedicated
+  high-priority thread, and streams 32-bit float sample chunks to the scratchpad.
+
+• AudioPlaybackEngine.kt
+  Wrapper around android.media.AudioTrack in MODE_STREAM. Streams 32-bit float
+  PCM data to headphones or speakers for scrubbing preview, tape playback, and
+  the 3-second pre-roll countdown before punch-and-roll overwrite.
+
+• AudioRecordingService.kt
+  An Android Foreground Service running with a PARTIAL_WAKE_LOCK and an ongoing
+  notification. Keeps recording alive if the user locks the screen, switches apps,
+  or if the system kills MainActivity under memory pressure.
+
+[ hardware/ ]
+• MicrophoneManager.kt
+  Uses AudioManager.getDevices(GET_DEVICES_INPUTS) to enumerate all physical audio
+  inputs (Built-in mic, USB audio interface, Bluetooth SCO). Inspects hardware
+  capabilities including supported sample rates and channel counts.
+
+• AudioPreset.kt
+  Data models defining audio profiles (Standard Podcast 48kHz/24b, High-Res
+  Studio 96kHz/32f, Voice Memo 16kHz/16b, Custom). Contains validation rules
+  that disable high-res presets when restricted hardware (like Bluetooth SCO) is active.
+
+[ scratchpad/ ]
+• ScratchpadManager.kt
+  Manages direct random-access file I/O for `staging_session.raw`. Converts timecode
+  offsets to exact byte coordinates (Time * Rate * Channels * 4 bytes). Handles
+  append, truncation, and continuous 500ms disk syncs.
+
+• PunchAndRollEngine.kt
+  Calculates sample-accurate seek positions for retakes. Implements a 5ms
+  linear micro-crossfade at the splice boundary between the old take and incoming
+  audio to eliminate acoustic pops and clicks.
+
+• CrashRecoverySentinel.kt
+  Maintains a JSON sidecar file (`staging_session.json`) tracking active sample
+  rate, channel count, and marker timestamps. Scans the scratchpad folder on
+  app startup to prompt recovery of orphaned sessions after sudden crashes.
+
+[ codec/ ]
+• WavHeaderWriter.kt
+  Generates and prepends binary RIFF headers to raw PCM streams. Handles standard
+  16-bit / 24-bit PCM headers (Format 0x0001) as well as uncompressed 32-bit
+  IEEE Float headers (Format 0x0003).
+
+• MediaCodecDecoder.kt
+  Ingestion engine. Uses MediaExtractor and MediaCodec to decompress imported
+  MP3, AAC, FLAC, and Opus files into raw 32-bit float PCM chunks inside the
+  scratchpad for seamless editing.
+
+• MediaCodecEncoder.kt
+  Export engine. Transcodes the 32-bit float scratchpad into final output
+  files (FLAC, AAC/M4A, Opus) with user-selected bitrates and sample rates.
+
+[ dsp/ ]
+• DbfsCalculator.kt
+  Calculates RMS (Root Mean Square) and peak sample amplitude from float buffers,
+  converting linear values to decibels relative to full scale (-60 to 0 dBFS)
+  for UI metering.
+
+• VoiceActivityDetector.kt (VAD)
+  Lightweight energy detector that tracks the speech envelope. Triggers an
+  auto-pause signal for the teleprompter when silence exceeds 1.5 seconds.
+
+• AudioFilters.kt
+  DSP filtering pipeline:
+  - 80 Hz 1st-order IIR high-pass filter (cuts mic handling rumble).
+  - Downward noise gate (suppresses background room tone below threshold).
+  - Peak normalizer (scales audio to -1.0 dBFS ceiling before export).
+
+
+--------------------------------------------------------------------------------
+DATA & STORAGE LAYER (com.example.audiorecorder.data.*)
+--------------------------------------------------------------------------------
+
+[ db/ ]
+• AppDatabase.kt
+  The Room Database instance. Handles SQLite connection, versioning, and migrations.
+
+• RecordingDao.kt
+  Data Access Object defining queries: getActiveRecordings(), getTrashedRecordings(),
+  filterByFormat(), searchByTitle(), sortByDate(), softDelete(), and bulkDelete().
+
+• RecordingEntity.kt
+  Room entity representing a recording in SQLite:
+  id, title, filePath, durationMs, sampleRate, bitDepth, channelCount,
+  format, fileSize, createdAt, isTrashed, trashedDate.
+
+[ model/ ]
+• Marker.kt
+  Data class representing a timestamp marker/cue pin placed during recording.
+
+• Script.kt
+  Data class representing teleprompter scripts (id, title, content, wordsPerLine,
+  scrollSpeed, fontSize).
+
+[ repository/ ]
+• RecordingRepository.kt
+  Mediator between Room Database and the file system (`context.getExternalFilesDir("recordings")`).
+  Ensures that deleting a record updates SQLite and relocates/unlinks the physical file.
+
+• FileExporter.kt
+  Handles exporting files out of the app sandbox:
+  - Intent.ACTION_CREATE_DOCUMENT for saving to SD card / external folders via SAF.
+  - FileProvider + Intent.ACTION_SEND for sharing files to external apps.
+  - Batch zip packaging for multi-select exports.
+
+
+--------------------------------------------------------------------------------
+UI & PRESENTATION LAYER (com.example.audiorecorder.ui.*)
+--------------------------------------------------------------------------------
+
+[ library/ ]
+• LibraryFragment.kt
+  Screen 1. Displays the recordings list, search view, filter chips (Date, Format,
+  Duration), sort dialog trigger, and contextual action bar for multi-select batch mode.
+
+• LibraryViewModel.kt
+  Holds reactive UI state via Kotlin StateFlow. Coordinates search queries, active
+  filter chips, sorting criteria, and multi-select checkbox maps.
+
+• RecordingAdapter.kt
+  RecyclerView adapter rendering recording cards with collapsed state (title, specs,
+  mini waveform, play icon) and expandable action drawer (scrubber, export, edit,
+  rename, delete).
+
+[ studio/ ]
+• StudioFragment.kt
+  Screen 2. Houses the teleprompter pane, waveform visualizer, dBFS meter, timecode
+  display, action pill buttons, and the morphing record dock (Play/Pause + Stop).
+
+• StudioViewModel.kt
+  State manager for recording sessions. Tracks active timecode, punch-and-roll
+  mode (PREVIEW vs REPLACE), current mic, selected preset, and live dBFS levels.
+
+[ customviews/ ]
+• WaveformVisualizerView.kt
+  Hardware-accelerated custom Canvas View (`onDraw`). Renders a stationary center
+  playhead with historical waveform drifting left. Supports touch drag for scrubbing
+  and vertical zoom scaling (+/-).
+
+• DbfsMeterView.kt
+  Custom vertical Canvas View drawing a multi-segment LED-style dBFS level meter
+  calibrated from -60 dBFS to 0 dBFS (Green: safe, Yellow: -12dB, Red: clipping).
+
+• TeleprompterView.kt
+  Custom text viewport supporting smooth pixel-level auto-scrolling, mirror mode
+  (`scaleX = -1f`) for physical glass rigs, and a center reading guideline.
+
+[ dialogs/ ]
+• MicSelectionDialog.kt
+  Modal bottom sheet listing all hardware input devices with supported sample
+  rates and channel configurations.
+
+• PresetSelectionDialog.kt
+  Modal bottom sheet allowing selection of standard presets or custom configuration
+  of container format, sample rate, bit depth, and bitrate.
+
+• ScriptEditorDialog.kt
+  Inline text editor modal for writing teleprompter copy or importing `.txt` files.
+
+
+--------------------------------------------------------------------------------
+UTILITIES & RESOURCES
+--------------------------------------------------------------------------------
+
+• PermissionHelper.kt
+  Centralizes runtime permission requests (RECORD_AUDIO and POST_NOTIFICATIONS
+  for Android 13+) and permission-rationale dialogs.
+
+• TimecodeFormatter.kt
+  Pure utility converting millisecond/sample counts into readable `HH:MM:SS.mmm`
+  format for meters and timeline scrubbers.
+
+• res/xml/file_paths.xml
+  Configures the androidx.core.content.FileProvider whitelist, granting temporary
+  URI read permissions to external apps during export.
+
+
+================================================================================
+3. THREADING & EXECUTION FLOW
+================================================================================
+
+1. UI Thread (Main)
+   - Handles touch events, transitions, and ViewBinding.
+   - Observes StateFlow from ViewModels to trigger UI redraws.
+
+2. Audio Capture Thread (Real-Time Priority)
+   - Runs AudioRecord.read() loop with zero UI work.
+   - Pushes raw floats directly into the Scratchpad buffer.
+   - Computes RMS/Peak levels and posts metrics to StateFlow at 60 Hz.
+
+3. Disk I/O & Transcoding Thread (Dispatchers.IO)
+   - Executes ScratchpadManager flushes.
+   - Handles MediaCodec encoding/decoding and WAV header generation.
+   - Performs Room Database queries and file system migrations.
+================================================================================
+
+================================================================================
+MODIFICATION LOG: SCRATCHPADMANAGER TAIL CACHE & RANGE SPLICING
+================================================================================
+- Updated: com.example.audiorecorder.audio.scratchpad.ScratchpadManager
+  • Added `prepareRangeReplacement(punchInSample, punchOutSample, channels)`:
+    Isolates downstream frames into an asynchronous disk cache before writing.
+  • Added `spliceTailBack(sampleRate, channels, crossfadeMs)`:
+    Restores sheltered audio after take completion with 5ms linear crossfade.
+  • Added `applyBoundaryCrossfade()`:
+    Reads trailing frames of current take and leading frames of cached tail,
+    computing linear interpolations:
+    Sample[n] = End[n] * (1 - a) + Tail[n] * a
+  • Retained `truncateAtSample()` strictly for explicit user-confirmed retakes.
+================================================================================

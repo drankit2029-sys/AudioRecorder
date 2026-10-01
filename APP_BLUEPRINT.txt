@@ -1,0 +1,172 @@
+================================================================================
+AUDIO RECORDER & STUDIO - ARCHITECTURE & SPECIFICATION BLUEPRINT
+================================================================================
+
+1. CORE TECHNICAL SPECIFICATIONS
+--------------------------------------------------------------------------------
+- Platform: Android Native (Kotlin)
+- Orientation: Strict Portrait (Phones & Tablets)
+- Target SDK: 36 (Android 16) | Min SDK: 24 (Android 7.0) | Compile SDK: 36
+- Development Setup: Acode (Editor) + Git/GH CLI (Termux/Alpine)
+- Cloud Build: GitHub Actions (Ubuntu runner, JDK 17, Gradle 8.7)
+- Internal Processing: 32-bit IEEE Float PCM Scratchpad (Zero-clipping headroom)
+- Background Execution: Android Foreground Service with PARTIAL_WAKE_LOCK
+
+
+2. AUDIO ENGINE & SCRATCHPAD PIPELINE
+--------------------------------------------------------------------------------
+Capture Pipeline:
+  [ Hardware Mic ] (Built-in / USB Audio / Bluetooth SCO)
+         │
+         ▼
+  [ AudioRecord Native Thread ] (Captures 32-bit Float PCM)
+         │
+         ├───► [ Real-time Peak/RMS Math ] ───► [ Vertical dBFS Meter UI ]
+         ├───► [ Voice Activity Detection ] ──► [ Prompter Auto-Pause ]
+         │
+         ▼
+  [ Universal 32-bit Float Scratchpad ] (staging_session.raw)
+         │
+         │  • Direct random-access seek for live punch-in
+         │  • Flushed to disk every 500ms
+         │  • 5ms micro-crossfade applied at splice boundaries
+         │
+         ▼ (Upon Stop / Save)
+  [ Export & Transcode Pipeline ]
+     ├── WAV (16-bit, 24-bit, or raw 32-bit Float IEEE)
+     ├── FLAC (Lossless compression via MediaCodec)
+     ├── AAC / M4A & Opus (Compressed voice via MediaCodec)
+     └── MP3 (Via LAME encoder integration)
+
+Crash Recovery Sentinel:
+  • Maintains sidecar JSON metadata (sample rate, channel layout, markers).
+  • On app startup, checks for unfinalized sessions in cache.
+  • Prompts one-tap session recovery or clean discard.
+
+
+3. SCREEN 1: AUDIO LIBRARY
+--------------------------------------------------------------------------------
+Storage Directory:
+  context.getExternalFilesDir("recordings") (Sandboxed, fast I/O, no SAF delays)
+
+Search, Filters & Sorting:
+  • Search Bar: Instant text filter matching title, date, or tags.
+  • Filter Chips:
+      - Date: All, Today, Past Week, Past Month.
+      - Duration: Short (<1m), Medium (1-10m), Long (>10m).
+      - Format: WAV, FLAC, AAC, MP3, Raw 32-bit.
+  • Sorting: Date Modified, Title (A-Z / Z-A), Duration, File Size.
+
+Recording Card UI:
+  • Collapsed State:
+      - Title, timestamp, duration, specs badge (e.g., 48kHz • 24b • Stereo).
+      - File size, mini-waveform visual, and inline Play/Pause button.
+  • Expanded Drawer (Tap Card):
+      - Interactive scrubber timeline with draggable playhead.
+      - Export: Save to SD card/device folder via SAF or share via App Intent.
+      - Edit: Ingests take into Studio for punch-and-roll or append.
+      - Rename & Delete: Inline rename dialog; soft delete to 30-day trash bin.
+
+Batch Multi-Select Mode (Long-press any card):
+  • Checkbox selection across all library cards.
+  • Batch Export: Send multiple via system share sheet or zip to archive.
+  • Batch Delete: Bulk trash bin relocation or permanent purge.
+
+
+4. SCREEN 2: STUDIO & RECORDING
+--------------------------------------------------------------------------------
+UI Layout (Top to Bottom):
+
+[A] Teleprompter Area (Dynamic Height):
+  • Top Bar:
+      - Script Menu: Create, edit, or import (.txt, .docx).
+      - Scroll Toggle: Auto-scroll linked to recording or run standalone.
+      - Mirror Mode: Horizontal flip (scaleX = -1f) for physical glass rigs.
+  • Prompter Viewport:
+      - High-contrast text with central reading guideline.
+      - VAD Auto-Pause: Pauses auto-scroll when user stops speaking > 1.5s.
+  • Tuning Capsule Controls:
+      - Words per line: Stepper [-] [val] [+]. Swipe or hold to edit.
+      - Scroll speed: Stepper [-] [val] [+].
+      - Font size & Line spacing: Steppers [-] [val] [+].
+  • Collapse Toggle: Minimizes prompter to maximize waveform visualizer.
+
+[B] Waveform Visualizer:
+  • Fixed Center Playhead: Waveform draws from center and scrolls leftward.
+  • Zoom Controls: Vertical [+] and [-] buttons, plus two-finger pinch zoom.
+  • Interactive Scrubbing:
+      - Swiping waveform moves historical audio under center playhead.
+      - Scrubbing backward during active recording automatically pauses capture.
+
+[C] Control & Status Strip:
+  • Vertical dBFS Meter: -60 dBFS to 0 dBFS range; clipping indicators.
+  • Timecode: High-precision counter (HH:MM:SS.mmm).
+  • Action Pills:
+      1. Mic Selector: Queries AudioDeviceInfo (Built-in, USB, BT SCO).
+      2. Format Presets: Podcast (48k/24b), High-Res Studio (96k/32f),
+         Voice Memo (16k/16b), or Custom. Unsupported configurations
+         are grayed out (e.g., Bluetooth locked to 16kHz Mono).
+      3. Prompter Toggle: Expands/collapses teleprompter pane.
+      4. Mode Toggle: Switches between Preview and Replace.
+
+[D] Morphing Record Dock:
+  • Idle State: Single circular record button (starts recording).
+  • Active State: Splits into two distinct buttons:
+      - Left: Play/Pause toggle.
+      - Right: Square Stop & Save button (transcodes and saves to library).
+
+
+5. EDITING & PUNCH-AND-ROLL MECHANICS
+--------------------------------------------------------------------------------
+Universal Ingestion:
+  • Existing recordings (WAV, FLAC, AAC, MP3) decode to 32-bit Float PCM
+    scratchpad via MediaCodec before editing.
+
+Punch-and-Roll Workflow:
+  1. User scrubs visualizer to punch point (Time).
+  2. Byte Offset = Time * SampleRate * Channels * 4 bytes.
+  3. Pre-Roll: 3-second playback into headphones before recording starts.
+  4. Replace Mode: Writes incoming float stream at byte offset.
+  5. Anti-Click Micro-Crossfade: 5ms linear blend applied at splice point:
+     Sample[n] = OldSample[n] * (1 - a) + NewSample[n] * a  (where 0 <= a <= 1)
+  6. Safety Feedback Guard: Mutes monitor output if external speakers active.
+
+Trimming:
+  • Set Start and End marks; copies byte range to new scratchpad.
+  • Applies 10ms micro-fade to boundaries to eliminate DC offset thumps.
+
+
+6. REAL-TIME & EXPORT DSP EFFECTS PIPELINE
+--------------------------------------------------------------------------------
+1. High-Pass Filter (80 Hz):
+   Attenuates low-end rumble and handling thumps.
+   Formula: y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+
+2. Downward Noise Gate:
+   Attenuates ambient room noise when audio falls below threshold (e.g., -45 dBFS).
+
+3. De-Esser:
+   Sidechain bandpass filter isolates 5kHz - 8kHz sibilance and dynamically
+   compresses high-frequency peaks.
+
+4. Peak Normalization:
+   Scans peak float values and normalizes final mix to -1.0 dBFS ceiling
+   prior to export.
+================================================================================
+
+================================================================================
+MODIFICATION LOG: NON-DESTRUCTIVE RANGE REPLACEMENT & TAIL PRESERVATION
+================================================================================
+- Added Range-Splicing Workflow:
+  Replaced destructive automatic truncation with a non-destructive dual-mode
+  engine:
+  1. Range Replacement (Punch-In to Punch-Out):
+     - Downstream audio (Punch-Out to EOF) is sheltered to `tail_cache.raw`.
+     - New audio is recorded from Punch-In onwards.
+     - Upon stopping, `spliceTailBack()` appends the tail back onto the new take.
+     - Dual-boundary 5ms micro-crossfades are applied at both splice points
+       to eliminate boundary clicks.
+  2. Overwrite to End (Classic Punch-and-Roll):
+     - Explicit user action via `truncateAtSample()` when intentionally
+       discarding downstream takes.
+================================================================================
