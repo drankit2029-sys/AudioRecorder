@@ -3,7 +3,7 @@ set -e
 
 COMMIT_MSG="${1:-Update build}"
 
-echo "==> 1. Staging and committing changes..."
+echo "==> 1. Staging and committing..."
 git add .
 if git diff-index --quiet HEAD --; then
     echo "No changes to commit. Pushing existing commits..."
@@ -14,26 +14,35 @@ fi
 echo "==> 2. Pushing to GitHub..."
 git push origin main
 
-echo "==> 3. Monitoring cloud build in real time..."
-# Sleep 3 seconds so GitHub registers the webhook run before watching
-sleep 3
-gh run watch
+echo "==> 3. Waiting for GitHub to register workflow run..."
+RUN_ID=""
+for i in $(seq 1 15); do
+    # Fetch the ID of the latest run triggered on main
+    RUN_ID=$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+    if [ -n "$RUN_ID" ]; then
+        echo "Found run ID: $RUN_ID"
+        break
+    fi
+    sleep 2
+done
 
-echo "==> 4. Downloading compiled APK to phone storage..."
+if [ -z "$RUN_ID" ]; then
+    echo "Error: No GitHub Actions run detected. Check repo Actions settings."
+    exit 1
+fi
+
+echo "==> 4. Monitoring build (Run ID: $RUN_ID)..."
+gh run watch "$RUN_ID"
+
+echo "==> 5. Downloading compiled APK..."
 DEST_DIR="/sdcard/Download"
 mkdir -p "$DEST_DIR"
-gh run download -n app-debug -D "$DEST_DIR"
+gh run download "$RUN_ID" -n app-debug -D "$DEST_DIR"
 
-echo "==> 5. Launching installer..."
+echo "==> 6. Launching installer..."
 APK_PATH="$DEST_DIR/app-debug.apk"
-
-# Method A: Termux environment
 if command -v termux-open >/dev/null 2>&1; then
     termux-open "$APK_PATH"
-# Method B: Root/system activity manager fallback
-elif command -v am >/dev/null 2>&1; then
-    am start -a android.intent.action.VIEW -d "file://$APK_PATH" -t "application/vnd.android.package-archive"
 else
-    echo "APK saved to: $APK_PATH"
-    echo "Open your phone's 'Downloads' app and tap 'app-debug.apk' to install."
+    echo "APK downloaded to: $APK_PATH"
 fi
