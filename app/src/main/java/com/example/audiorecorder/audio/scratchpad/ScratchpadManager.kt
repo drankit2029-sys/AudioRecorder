@@ -72,21 +72,24 @@ class ScratchpadManager(private val scratchFile: File) {
         val raf = randomAccessFile ?: return
         val requiredBytes = count * 4
 
-        var bb = byteBuffer
-        if (bb == null || bb.capacity() < requiredBytes) {
-            bb = ByteBuffer.allocateDirect(requiredBytes).order(ByteOrder.LITTLE_ENDIAN)
-            byteBuffer = bb
+        // Guarantee a non-null target buffer to satisfy Kotlin compiler strict typing
+        val currentBuf = byteBuffer
+        val targetBuffer: ByteBuffer = if (currentBuf == null || currentBuf.capacity() < requiredBytes) {
+            val newBuf = ByteBuffer.allocateDirect(requiredBytes).order(ByteOrder.LITTLE_ENDIAN)
+            byteBuffer = newBuf
+            newBuf
         } else {
-            bb.clear()
+            currentBuf.clear()
+            currentBuf
         }
 
         for (i in 0 until count) {
-            bb.putFloat(floats[i])
+            targetBuffer.putFloat(floats[i])
         }
 
         val array = ByteArray(requiredBytes)
-        bb.position(0)
-        bb.get(array)
+        targetBuffer.position(0)
+        targetBuffer.get(array)
         raf.write(array)
     }
 
