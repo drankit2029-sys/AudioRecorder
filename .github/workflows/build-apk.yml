@@ -3,7 +3,17 @@ name: Build Debug APK
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'app/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
+
+# Cancel any previous running build when a new commit is pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -11,6 +21,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # Shallow clone to reduce git transfer time
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -18,13 +30,30 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Cache Android SDK Components
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/platforms/android-36
+            ${{ env.ANDROID_HOME }}/build-tools/36.0.0
+          key: android-sdk-36-${{ runner.os }}
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+          cache-read-only: false
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --parallel --build-cache -x test -x lint -x check
+        run: |
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --parallel \
+            --build-cache \
+            --configuration-cache \
+            -x test \
+            -x lint \
+            -x check
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -32,3 +61,5 @@ jobs:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           compression-level: 0
+          retention-days: 1
+          overwrite: true
