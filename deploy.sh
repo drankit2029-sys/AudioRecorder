@@ -43,7 +43,7 @@ gh run watch "$RUN_ID"
 echo "==> 5. Downloading compiled APK..."
 DEST_DIR="/sdcard/Download"
 mkdir -p "$DEST_DIR"
-gh run download "$RUN_ID" -n app-debug -D "$DEST_DIR" --clobber
+gh run download "$RUN_ID" -n app-debug -D "$DEST_DIR"
 
 echo "==> Done!"
 echo "APK saved to: $DEST_DIR/app-debug.apk"
