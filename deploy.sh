@@ -43,7 +43,21 @@ gh run watch "$RUN_ID"
 echo "==> 5. Downloading compiled APK..."
 DEST_DIR="/sdcard/Download"
 mkdir -p "$DEST_DIR"
-gh run download "$RUN_ID" -n app-debug -D "$DEST_DIR"
 
-echo "==> Done!"
-echo "APK saved to: $DEST_DIR/app-debug.apk"
+# 1. Create a guaranteed empty temporary directory
+TMP_DIR=$(mktemp -d)
+
+# 2. Extract cleanly with zero collision
+gh run download "$RUN_ID" -n app-debug -D "$TMP_DIR"
+
+# 3. Locate and overwrite the destination APK
+APK_FILE=$(find "$TMP_DIR" -type f -name "*.apk" | head -n 1)
+if [ -n "$APK_FILE" ]; then
+    cp -f "$APK_FILE" "$DEST_DIR/app-debug.apk"
+    rm -rf "$TMP_DIR"
+    echo "Successfully saved to: $DEST_DIR/app-debug.apk"
+else
+    rm -rf "$TMP_DIR"
+    echo "Error: No APK found inside the downloaded artifact."
+    exit 1
+fi
