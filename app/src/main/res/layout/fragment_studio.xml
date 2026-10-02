@@ -239,7 +239,6 @@
                 android:textStyle="bold"
                 android:fontFamily="monospace" />
 
-            <!-- Direct In-Studio Audition Trigger -->
             <ImageButton
                 android:id="@+id/btnStudioPlayPause"
                 android:layout_width="44dp"
@@ -258,25 +257,26 @@
             android:layout_marginTop="8dp">
 
             <Button
+                android:id="@+id/btnNewTake"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="0.9"
+                android:layout_marginEnd="4dp"
+                android:padding="0dp"
+                android:text="✦ New"
+                android:textColor="#FFD600"
+                android:textSize="11sp" />
+
+            <Button
                 android:id="@+id/btnMicSelector"
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_weight="1"
+                android:layout_weight="1.1"
                 android:layout_marginEnd="4dp"
                 android:padding="0dp"
                 android:text="🎙 Built-in"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnPresetSelector"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:padding="0dp"
-                android:text="🎛 48kHz"
                 android:textSize="11sp" />
 
             <Button
@@ -295,7 +295,7 @@
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_weight="1"
+                android:layout_weight="1.1"
                 android:padding="0dp"
                 android:text="▶ Preview"
                 android:textColor="#00E5FF"

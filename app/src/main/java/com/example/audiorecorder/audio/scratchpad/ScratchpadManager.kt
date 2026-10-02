@@ -25,9 +25,36 @@ class ScratchpadManager(val scratchFile: File) {
         }
     }
 
+    @Synchronized
+    fun resetSession() {
+        close()
+        if (scratchFile.exists()) scratchFile.delete()
+        if (tailCacheFile.exists()) tailCacheFile.delete()
+        isTailShelved = false
+        openSession()
+    }
+
     /**
-     * In-place seek to a sample without resetting file structure.
+     * Copies a finalized WAV file into the live scratchpad, stripping the RIFF header.
      */
+    @Synchronized
+    fun loadFromWav(sourceWav: File) {
+        resetSession()
+        if (!sourceWav.exists() || sourceWav.length() <= 44L) return
+
+        FileOutputStream(scratchFile).use { fos ->
+            FileInputStream(sourceWav).use { fis ->
+                fis.skip(44) // Skip 44-byte RIFF header to isolate raw float PCM
+                val buffer = ByteArray(64 * 1024)
+                var read: Int
+                while (fis.read(buffer).also { read = it } != -1) {
+                    fos.write(buffer, 0, read)
+                }
+            }
+        }
+        openSession()
+    }
+
     @Synchronized
     fun seekToSample(sampleIndex: Long, channels: Int) {
         openSession()
@@ -38,10 +65,6 @@ class ScratchpadManager(val scratchFile: File) {
         }
     }
 
-    /**
-     * Shelves downstream audio from [punchOutSample] to EOF into tail cache.
-     * Truncates file at [punchInSample] so new incoming audio streams continuously.
-     */
     @Synchronized
     fun prepareRangeReplacement(punchInSample: Long, punchOutSample: Long, channels: Int) {
         openSession()
@@ -182,8 +205,8 @@ class ScratchpadManager(val scratchFile: File) {
     }
 
     fun exportToFloatWav(destinationWav: File, sampleRate: Int, channels: Int) {
-        close()
-        val totalBytes = scratchFile.length()
+        sync()
+        val totalBytes = getTotalAudioBytes()
         FileOutputStream(destinationWav).use { fos ->
             WavHeaderWriter.writeHeader(
                 out = fos,

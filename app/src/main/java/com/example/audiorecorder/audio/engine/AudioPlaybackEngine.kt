@@ -149,7 +149,6 @@ class AudioPlaybackEngine(
         val floatBuffer = FloatArray(floatChunkSize)
         val byteBuf = ByteBuffer.wrap(rawBuffer).order(ByteOrder.LITTLE_ENDIAN)
 
-        // Account for RIFF 44-byte header if playing back a finalized WAV file
         val isWav = scratchFile.name.endsWith(".wav", ignoreCase = true)
         val headerOffset = if (isWav) 44L else 0L
 
@@ -224,7 +223,14 @@ class AudioPlaybackEngine(
 
     private fun notifyFinish() {
         val wasPreRoll = isPreRollActive.getAndSet(false)
-        stopPlayback()
+        isPlaying.set(false)
+        isPaused.set(false)
+
+        try {
+            audioTrack?.stop()
+            audioTrack?.flush()
+        } catch (_: Exception) {}
+        release()
 
         if (wasPreRoll) {
             listener?.onPreRollFinished()
@@ -248,8 +254,10 @@ class AudioPlaybackEngine(
         isPaused.set(false)
 
         try {
-            playbackThread?.interrupt()
-            playbackThread?.join(300)
+            if (Thread.currentThread() != playbackThread) {
+                playbackThread?.interrupt()
+                playbackThread?.join(250)
+            }
         } catch (_: Exception) {}
         playbackThread = null
 

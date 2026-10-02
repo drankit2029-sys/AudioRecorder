@@ -49,6 +49,7 @@ class AudioRecordingService : Service(), AudioCaptureListener {
         captureEngine = AudioCaptureEngine(scratchpadManager, this)
         playbackEngine = AudioPlaybackEngine(this)
 
+        scratchpadManager.openSession()
         acquireWakeLock()
         createNotificationChannel()
     }
@@ -92,7 +93,7 @@ class AudioRecordingService : Service(), AudioCaptureListener {
     fun stopRecording(): File {
         captureEngine.stopCapture()
         stopForeground(STOP_FOREGROUND_REMOVE)
-        return crashSentinel.rawFile
+        return scratchpadManager.scratchFile
     }
 
     fun getElapsedMillis(): Long {
@@ -174,6 +175,7 @@ class AudioRecordingService : Service(), AudioCaptureListener {
         super.onDestroy()
         captureEngine.release()
         playbackEngine.release()
+        scratchpadManager.close()
         releaseWakeLock()
     }
 

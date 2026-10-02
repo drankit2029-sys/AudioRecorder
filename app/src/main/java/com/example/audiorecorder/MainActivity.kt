@@ -222,6 +222,19 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackLis
         }
     }
 
+    fun startNewBlankSession() {
+        val service = recordingService ?: return
+        service.getPlaybackEngine().stopPlayback()
+        if (studioViewModel.studioState.value == StudioState.RECORDING) {
+            service.stopRecording()
+        }
+        service.getScratchpadManager().resetSession()
+        studioViewModel.clearWaveform()
+        studioViewModel.setElapsedMillis(0L)
+        studioViewModel.setStudioState(StudioState.IDLE)
+        Toast.makeText(this, "Started new session", Toast.LENGTH_SHORT).show()
+    }
+
     fun toggleStudioPreview() {
         val service = recordingService ?: return
         val playback = service.getPlaybackEngine()
@@ -230,7 +243,10 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackLis
             playback.stopPlayback()
             studioViewModel.setStudioState(StudioState.IDLE)
         } else {
-            val rawFile = service.getCrashSentinel().rawFile
+            val scratchpad = service.getScratchpadManager()
+            scratchpad.sync()
+            val rawFile = scratchpad.scratchFile
+
             if (!rawFile.exists() || rawFile.length() == 0L) {
                 Toast.makeText(this, "No recorded audio to audition yet.", Toast.LENGTH_SHORT).show()
                 return
@@ -260,7 +276,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackLis
         val mic = studioViewModel.selectedMic.value
         val scratchpad = service.getScratchpadManager()
 
-        // Stop any running playback
         service.getPlaybackEngine().stopPlayback()
 
         val totalBytes = scratchpad.getTotalAudioBytes()
@@ -268,11 +283,9 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackLis
         val punchSample = studioViewModel.punchInSampleIndex
 
         if (punchSample < totalSamples && totalSamples > 0L) {
-            // Punch-and-Roll: Shelve downstream tail audio and peaks
+            // Punch-in: Shelve downstream tail audio and peaks
             scratchpad.prepareRangeReplacement(punchSample, punchSample, preset.channels)
             studioViewModel.preparePunchWaveform(studioViewModel.punchInPeakIndex)
-        } else if (totalSamples == 0L) {
-            studioViewModel.clearWaveform()
         }
 
         val success = service.startRecording(preset, mic)
@@ -303,7 +316,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackLis
         val destWav = File(recordingsDir, wavName)
 
         scratchpad.exportToFloatWav(destWav, preset.sampleRate, preset.channels)
-        service.getCrashSentinel().clearSession()
 
         val durationMs = service.getElapsedMillis()
         val entity = RecordingEntity(
@@ -350,13 +362,24 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackLis
     }
 
     fun loadRecordingIntoStudio(recording: RecordingEntity) {
+        val service = recordingService ?: return
+        val targetFile = File(recording.filePath)
+        if (!targetFile.exists()) return
+
         CoroutineScope(Dispatchers.IO).launch {
-            val extractedPeaks = extractWaveformPeaksFromWav(File(recording.filePath), recording.sampleRate, recording.channelCount)
+            // 1. Copy WAV payload into live studio scratchpad
+            service.getScratchpadManager().loadFromWav(targetFile)
+
+            // 2. Extract visualizer peaks
+            val extractedPeaks = extractWaveformPeaksFromWav(targetFile, recording.sampleRate, recording.channelCount)
+
             withContext(Dispatchers.Main) {
                 studioViewModel.setWaveformPeaks(extractedPeaks)
-                studioViewModel.setElapsedMillis(recording.durationMs)
+                studioViewModel.setElapsedMillis(0L)
+                studioViewModel.setScrubPosition(0L, 0)
+                seekScratchpadToSample(0L, recording.channelCount)
                 binding.btnNavStudio.performClick()
-                Toast.makeText(this@MainActivity, "Loaded '${recording.title}'", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Loaded '${recording.title}' into Studio", Toast.LENGTH_SHORT).show()
             }
         }
     }

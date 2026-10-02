@@ -83,8 +83,10 @@ class StudioFragment : Fragment(), WaveformScrubListener {
     }
 
     private fun setupActionPills() {
+        binding.btnNewTake.setOnClickListener {
+            (activity as? MainActivity)?.startNewBlankSession()
+        }
         binding.btnMicSelector.setOnClickListener { showMicrophonePicker() }
-        binding.btnPresetSelector.setOnClickListener { }
         binding.btnPrompterToggle.setOnClickListener {
             viewModel.togglePrompterVisibility()
             binding.layoutPrompterContainer.visibility =
