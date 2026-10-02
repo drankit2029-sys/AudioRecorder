@@ -4,6 +4,14 @@ import android.content.Context
 import org.json.JSONObject
 import java.io.File
 
+data class SavedRecording(
+    val file: File,
+    val name: String,
+    val durationSeconds: Long,
+    val sizeBytes: Long,
+    val lastModified: Long
+)
+
 data class InterruptedSession(
     val audioFile: File,
     val sampleRate: Int,
@@ -22,7 +30,7 @@ class SessionRecoveryManager(private val context: Context) {
     fun getRecordingsDirectory(): File = recordingsDir
 
     fun createNewTakeFile(): File {
-        return File(recordingsDir, "take_${System.currentTimeMillis()}.pcm")
+        return File(recordingsDir, "temp_take_${System.currentTimeMillis()}.pcm")
     }
 
     @Synchronized
@@ -43,6 +51,50 @@ class SessionRecoveryManager(private val context: Context) {
     }
 
     @Synchronized
+    fun commitRecording(tempFile: File, userTitle: String, sampleRate: Int = 48000): File {
+        markSessionCompleted()
+        val sanitizedTitle = userTitle.trim().replace(Regex("[^a-zA-Z0-9._ -]"), "_").ifBlank {
+            "Take_${System.currentTimeMillis()}"
+        }
+
+        var destination = File(recordingsDir, "$sanitizedTitle.pcm")
+        var counter = 1
+        while (destination.exists()) {
+            destination = File(recordingsDir, "${sanitizedTitle}_($counter).pcm")
+            counter++
+        }
+
+        tempFile.renameTo(destination)
+        return destination
+    }
+
+    @Synchronized
+    fun getSavedRecordings(sampleRate: Int = 48000): List<SavedRecording> {
+        val files = recordingsDir.listFiles { file ->
+            file.isFile && file.extension == "pcm" && !file.name.startsWith("temp_take_")
+        } ?: emptyArray()
+
+        // 32-bit Float Mono = 4 bytes per sample
+        val bytesPerSec = sampleRate * 4L
+
+        return files.map { file ->
+            val durationSec = if (bytesPerSec > 0) file.length() / bytesPerSec else 0L
+            SavedRecording(
+                file = file,
+                name = file.nameWithoutExtension,
+                durationSeconds = durationSec,
+                sizeBytes = file.length(),
+                lastModified = file.lastModified()
+            )
+        }.sortedByDescending { it.lastModified }
+    }
+
+    @Synchronized
+    fun deleteRecording(file: File): Boolean {
+        return file.delete()
+    }
+
+    @Synchronized
     fun getInterruptedSession(): InterruptedSession? {
         if (!recoveryDescriptorFile.exists()) return null
 
@@ -54,7 +106,6 @@ class SessionRecoveryManager(private val context: Context) {
             val file = File(filePath)
 
             if (file.exists() && file.length() > 0) {
-                // 16-bit Mono PCM: 2 bytes per sample
                 val bytesPerSec = sampleRate * 4L
                 val durationSec = file.length() / bytesPerSec
                 InterruptedSession(

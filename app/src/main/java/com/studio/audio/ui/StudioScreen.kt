@@ -19,13 +19,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studio.audio.core.audio.AudioInputDevice
 import com.studio.audio.core.audio.InterruptedSession
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
+    val destination by viewModel.currentDestination.collectAsState()
     val devices by viewModel.availableDevices.collectAsState()
     val selectedDevice by viewModel.selectedDevice.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val interruptedSession by viewModel.interruptedSession.collectAsState()
+    val pendingSaveFile by viewModel.pendingSaveFile.collectAsState()
+    val savedRecordings by viewModel.savedRecordings.collectAsState()
+
     var showDeviceDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -33,60 +41,56 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             PersistentDock(
+                currentDestination = destination,
                 isRecording = isRecording,
-                onFabClick = { viewModel.toggleRecording() }
+                onLibraryClick = { viewModel.navigateTo(AppDestination.LIBRARY) },
+                onStudioClick = { viewModel.navigateTo(AppDestination.STUDIO) },
+                onFabClick = {
+                    if (destination != AppDestination.STUDIO) {
+                        viewModel.navigateTo(AppDestination.STUDIO)
+                    }
+                    viewModel.toggleRecording()
+                }
             )
         }
     ) { innerPadding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .padding(innerPadding)
         ) {
-            SectionPlaceholder(
-                title = "1. Teleprompter Container",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.8f)
-            )
-
-            SectionPlaceholder(
-                title = "2. Waveform Visualizer",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1.2f)
-            )
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.8f)
-                    .padding(8.dp)
-                    .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                    .padding(12.dp)
-            ) {
-                Text(
-                    text = if (isRecording) "RECORDING ACTIVE" else "STANDBY",
-                    color = if (isRecording) Color(0xFFE53935) else Color.Gray,
-                    style = MaterialTheme.typography.labelSmall
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    InputHardwarePill(
-                        deviceName = selectedDevice?.name ?: "Detect Mic",
-                        onClick = {
+            when (destination) {
+                AppDestination.STUDIO -> {
+                    StudioContent(
+                        isRecording = isRecording,
+                        selectedDevice = selectedDevice,
+                        onOpenDeviceSelector = {
                             viewModel.refreshDevices()
                             showDeviceDialog = true
                         }
+                    )
+                }
+                AppDestination.LIBRARY -> {
+                    LibraryScreen(
+                        recordings = savedRecordings,
+                        onDelete = { viewModel.deleteRecording(it) }
                     )
                 }
             }
         }
     }
 
-    // Interrupted take recovery prompt
+    // 1. Save Take Name Dialog (Triggered after recording finishes)
+    pendingSaveFile?.let { file ->
+        SaveTakeDialog(
+            tempFile = file,
+            onSave = { name -> viewModel.confirmSaveTake(name) },
+            onDiscard = { viewModel.discardTake() }
+        )
+    }
+
+    // 2. Interrupted Take Recovery Dialog
     interruptedSession?.let { session ->
         RecoveryPromptDialog(
             session = session,
@@ -96,6 +100,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
+    // 3. Audio Input Device Selector Dialog
     if (showDeviceDialog) {
         DeviceSelectionDialog(
             devices = devices,
@@ -107,6 +112,101 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             onDismiss = { showDeviceDialog = false }
         )
     }
+}
+
+@Composable
+private fun StudioContent(
+    isRecording: Boolean,
+    selectedDevice: AudioInputDevice?,
+    onOpenDeviceSelector: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 1. Teleprompter Container
+        SectionPlaceholder(
+            title = "1. Teleprompter Container (Collapsible / Mirror)",
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.8f)
+        )
+
+        // 2. Waveform Visualizer
+        SectionPlaceholder(
+            title = "2. Waveform Visualizer (32-bit Float dynamic peaks)",
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1.2f)
+        )
+
+        // 3. Control & Metrics Strip
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.8f)
+                .padding(8.dp)
+                .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
+                .padding(12.dp)
+        ) {
+            Text(
+                text = if (isRecording) "RECORDING ACTIVE (32-bit Float @ 48kHz)" else "STANDBY",
+                color = if (isRecording) Color(0xFFE53935) else Color.Gray,
+                style = MaterialTheme.typography.labelSmall
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                InputHardwarePill(
+                    deviceName = selectedDevice?.name ?: "Detect Mic",
+                    onClick = onOpenDeviceSelector
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveTakeDialog(
+    tempFile: File,
+    onSave: (String) -> Unit,
+    onDiscard: () -> Unit
+) {
+    val defaultTitle = remember {
+        "Take_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}"
+    }
+    var titleText by remember { mutableStateOf(defaultTitle) }
+
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Save Recording") },
+        text = {
+            Column {
+                Text(
+                    text = "Enter a name for this take:",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = titleText,
+                    onValueChange = { titleText = it },
+                    singleLine = true,
+                    label = { Text("Take Title") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(titleText) },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Save Take")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDiscard) {
+                Text("Discard", color = Color(0xFFE53935))
+            }
+        }
+    )
 }
 
 @Composable
@@ -227,7 +327,10 @@ private fun DeviceSelectionDialog(
 
 @Composable
 fun PersistentDock(
+    currentDestination: AppDestination,
     isRecording: Boolean,
+    onLibraryClick: () -> Unit,
+    onStudioClick: () -> Unit,
     onFabClick: () -> Unit
 ) {
     Surface(
@@ -244,7 +347,12 @@ fun PersistentDock(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = {}) { Text("Library", color = Color.White) }
+            TextButton(onClick = onLibraryClick) {
+                Text(
+                    text = "Library",
+                    color = if (currentDestination == AppDestination.LIBRARY) Color(0xFF1E88E5) else Color.White
+                )
+            }
 
             FloatingActionButton(
                 onClick = onFabClick,
@@ -258,7 +366,12 @@ fun PersistentDock(
                 )
             }
 
-            TextButton(onClick = {}) { Text("Studio", color = Color.White) }
+            TextButton(onClick = onStudioClick) {
+                Text(
+                    text = "Studio",
+                    color = if (currentDestination == AppDestination.STUDIO) Color(0xFF1E88E5) else Color.White
+                )
+            }
         }
     }
 }
