@@ -7,6 +7,8 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import kotlinx.coroutines.*
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioCaptureEngine(
@@ -30,17 +32,22 @@ class AudioCaptureEngine(
         if (isRecording.get()) return
 
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        val bufferSize = (minBufferSize * 2).coerceAtLeast(4096)
+        val encoding = AudioFormat.ENCODING_PCM_FLOAT // 32-bit IEEE 754 Float
 
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            channelConfig,
-            audioFormat,
-            bufferSize
-        )
+        val format = AudioFormat.Builder()
+            .setEncoding(encoding)
+            .setSampleRate(sampleRate)
+            .setChannelMask(channelConfig)
+            .build()
+
+        val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, encoding)
+        val bufferSizeBytes = (minBufferSize * 2).coerceAtLeast(8192)
+
+        val record = AudioRecord.Builder()
+            .setAudioSource(MediaRecorder.AudioSource.MIC)
+            .setAudioFormat(format)
+            .setBufferSizeInBytes(bufferSizeBytes)
+            .build()
 
         record.preferredDevice = targetDevice
         currentDevice = targetDevice
@@ -51,11 +58,18 @@ class AudioCaptureEngine(
         record.startRecording()
 
         recordingJob = scope.launch(Dispatchers.IO) {
-            val audioBuffer = ByteArray(bufferSize)
+            // Using a direct ByteBuffer to stream float bytes directly to disk
+            val byteBuffer = ByteBuffer.allocateDirect(bufferSizeBytes).order(ByteOrder.LITTLE_ENDIAN)
+            val byteArray = ByteArray(bufferSizeBytes)
+
             while (isRecording.get() && isActive) {
-                val bytesRead = record.read(audioBuffer, 0, audioBuffer.size)
+                byteBuffer.clear()
+                val bytesRead = record.read(byteBuffer, bufferSizeBytes, AudioRecord.READ_BLOCKING)
+
                 if (bytesRead > 0) {
-                    diskWriter.write(audioBuffer, 0, bytesRead)
+                    byteBuffer.position(0)
+                    byteBuffer.get(byteArray, 0, bytesRead)
+                    diskWriter.write(byteArray, 0, bytesRead)
                 }
             }
         }

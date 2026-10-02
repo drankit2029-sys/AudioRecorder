@@ -55,7 +55,7 @@ class SessionRecoveryManager(private val context: Context) {
 
             if (file.exists() && file.length() > 0) {
                 // 16-bit Mono PCM: 2 bytes per sample
-                val bytesPerSec = sampleRate * 2L
+                val bytesPerSec = sampleRate * 4L
                 val durationSec = file.length() / bytesPerSec
                 InterruptedSession(
                     audioFile = file,
