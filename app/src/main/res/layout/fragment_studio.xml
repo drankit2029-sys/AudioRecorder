@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#101214">
+
+    <!-- 1. Teleprompter Section (Dynamic Height) -->
+    <LinearLayout
+        android:id="@+id/layoutPrompterContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:background="#16181B">
+
+        <!-- Prompter Header Controls -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="12dp"
+            android:background="#1E2124">
+
+            <Button
+                android:id="@+id/btnScript"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Script ▼"
+                android:textColor="#448AFF"
+                android:textSize="12sp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btnScrollToggle"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Auto-Scroll"
+                android:textColor="#00E676"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnMirror"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Mirror ⮂"
+                android:textColor="#FFD600"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- Prompter Viewport -->
+        <com.example.audiorecorder.ui.customviews.TeleprompterView
+            android:id="@+id/teleprompterView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:padding="16dp" />
+
+        <!-- Prompter Tuning Capsules -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="#181A1D"
+            android:paddingHorizontal="8dp">
+
+            <TextView
+                android:id="@+id/tvWordsDec"
+                android:layout_width="28dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="-"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/tvWordsValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="8 w/l"
+                android:textColor="#9E9E9E"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/tvWordsInc"
+                android:layout_width="28dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="+"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <View
+                android:layout_width="16dp"
+                android:layout_height="1dp" />
+
+            <TextView
+                android:id="@+id/tvSpeedDec"
+                android:layout_width="28dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="-"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/tvSpeedValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Speed"
+                android:textColor="#9E9E9E"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/tvSpeedInc"
+                android:layout_width="28dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="+"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <View
+                android:layout_width="16dp"
+                android:layout_height="1dp" />
+
+            <TextView
+                android:id="@+id/tvFontDec"
+                android:layout_width="28dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="-"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/tvFontValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Size"
+                android:textColor="#9E9E9E"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/tvFontInc"
+                android:layout_width="28dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="+"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 2. Waveform Visualizer & Zoom Section -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:orientation="horizontal"
+        android:background="#121416"
+        android:padding="8dp">
+
+        <com.example.audiorecorder.ui.customviews.WaveformVisualizerView
+            android:id="@+id/waveformVisualizerView"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:layout_width="36dp"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <Button
+                android:id="@+id/btnZoomIn"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="36dp"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:text="+"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnZoomOut"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="36dp"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:text="-"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 3. Status & Control Strip -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="84dp"
+        android:background="#181A1D">
+
+        <!-- dBFS Meter and Timecode -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <com.example.audiorecorder.ui.customviews.DbfsMeterView
+                android:id="@+id/dbfsMeterView"
+                android:layout_width="14dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="12dp" />
+
+            <TextView
+                android:id="@+id/tvTimecode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00:00.000"
+                android:textColor="#FFFFFF"
+                android:textSize="26sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace" />
+        </LinearLayout>
+
+        <!-- Action Pills Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+
+            <Button
+                android:id="@+id/btnMicSelector"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:padding="0dp"
+                android:text="🎙 Built-in"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnPresetSelector"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:padding="0dp"
+                android:text="🎛 Podcast"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnPrompterToggle"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:padding="0dp"
+                android:text="🗎 Prompter"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnModeToggle"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:padding="0dp"
+                android:text="⎌ Replace"
+                android:textColor="#FF5252"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>
