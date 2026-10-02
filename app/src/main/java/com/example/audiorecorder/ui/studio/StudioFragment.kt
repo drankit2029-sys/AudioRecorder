@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
 class StudioFragment : Fragment(), WaveformScrubListener {
 
     private var _binding: FragmentStudioBinding? = null
-    private val binding get() = _binding!!
+    val binding get() = _binding!!
     private val viewModel: StudioViewModel by activityViewModels()
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
@@ -33,13 +33,19 @@ class StudioFragment : Fragment(), WaveformScrubListener {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding.waveformVisualizerView.scrubListener = this
-
         binding.waveformVisualizerView.setPeaks(viewModel.waveformPeaks.value)
 
         setupPrompterControls()
         setupActionPills()
         setupZoomControls()
+        setupAuditionButton()
         observeStudioState()
+    }
+
+    private fun setupAuditionButton() {
+        binding.btnStudioPlayPause.setOnClickListener {
+            (activity as? MainActivity)?.toggleStudioPreview()
+        }
     }
 
     private fun setupPrompterControls() {
@@ -86,9 +92,6 @@ class StudioFragment : Fragment(), WaveformScrubListener {
         }
         binding.btnModeToggle.setOnClickListener {
             viewModel.togglePunchMode()
-            val mode = viewModel.punchMode.value
-            binding.btnModeToggle.text = if (mode == PunchMode.REPLACE) "⎌ Replace" else "▶ Preview"
-            binding.btnModeToggle.setTextColor(if (mode == PunchMode.REPLACE) 0xFFFF5252.toInt() else 0xFF00E676.toInt())
         }
     }
 
@@ -101,9 +104,28 @@ class StudioFragment : Fragment(), WaveformScrubListener {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
+                    viewModel.punchMode.collectLatest { mode ->
+                        if (mode == PunchMode.PREVIEW) {
+                            binding.btnModeToggle.text = "▶ Preview"
+                            binding.btnModeToggle.setTextColor(0xFF00E5FF.toInt())
+                        } else {
+                            binding.btnModeToggle.text = "⎌ Replace"
+                            binding.btnModeToggle.setTextColor(0xFFFF3D71.toInt())
+                        }
+                    }
+                }
+                launch {
+                    viewModel.studioState.collectLatest { state ->
+                        if (state == StudioState.PREVIEWING) {
+                            binding.btnStudioPlayPause.setImageResource(android.R.drawable.ic_media_pause)
+                        } else {
+                            binding.btnStudioPlayPause.setImageResource(android.R.drawable.ic_media_play)
+                        }
+                    }
+                }
+                launch {
                     viewModel.elapsedMillis.collectLatest { ms ->
                         binding.tvTimecode.text = TimecodeFormatter.formatMillis(ms)
-                        // In playback or non-recording states, advance visualizer playhead
                         if (viewModel.studioState.value != StudioState.RECORDING) {
                             val targetIndex = (ms / 25L).toInt()
                             binding.waveformVisualizerView.setPlayheadIndex(targetIndex)
@@ -118,6 +140,13 @@ class StudioFragment : Fragment(), WaveformScrubListener {
                 launch {
                     viewModel.peakDbfs.collectLatest { peak ->
                         binding.dbfsMeterView.setLevels(viewModel.rmsDbfs.value, peak)
+                    }
+                }
+                launch {
+                    viewModel.waveformPeaks.collectLatest { peaks ->
+                        if (viewModel.studioState.value != StudioState.RECORDING) {
+                            binding.waveformVisualizerView.setPeaks(peaks)
+                        }
                     }
                 }
                 launch {
@@ -176,6 +205,7 @@ class StudioFragment : Fragment(), WaveformScrubListener {
     override fun onScrubStop(finalPeakIndex: Int) {
         val preset = viewModel.selectedPreset.value
         val sampleOffset = (finalPeakIndex.toLong() * 25L * preset.sampleRate) / 1000L
+        viewModel.setScrubPosition(sampleOffset, finalPeakIndex)
         (activity as? MainActivity)?.seekScratchpadToSample(sampleOffset, preset.channels)
     }
 

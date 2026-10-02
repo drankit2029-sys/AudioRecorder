@@ -9,35 +9,42 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.min
 
-class ScratchpadManager(private val scratchFile: File) {
+class ScratchpadManager(val scratchFile: File) {
 
     private val tailCacheFile = File(scratchFile.parentFile ?: File("."), "tail_cache.raw")
     private var randomAccessFile: RandomAccessFile? = null
     private var byteBuffer: ByteBuffer? = null
-    private var isTailShelved = false
+    var isTailShelved = false
+        private set
 
+    @Synchronized
     fun openSession() {
         scratchFile.parentFile?.mkdirs()
-        randomAccessFile = RandomAccessFile(scratchFile, "rw")
+        if (randomAccessFile == null) {
+            randomAccessFile = RandomAccessFile(scratchFile, "rw")
+        }
     }
 
     /**
-     * In-place tape seek. Does NOT truncate downstream audio.
+     * In-place seek to a sample without resetting file structure.
      */
     @Synchronized
     fun seekToSample(sampleIndex: Long, channels: Int) {
+        openSession()
         val raf = randomAccessFile ?: return
         val byteOffset = sampleIndex * channels * 4L
-        raf.seek(byteOffset)
+        if (byteOffset <= raf.length()) {
+            raf.seek(byteOffset)
+        }
     }
 
     /**
      * Shelves downstream audio from [punchOutSample] to EOF into tail cache.
      * Truncates file at [punchInSample] so new incoming audio streams continuously.
-     * Downstream audio is restored via [spliceTailBack] when recording stops.
      */
     @Synchronized
     fun prepareRangeReplacement(punchInSample: Long, punchOutSample: Long, channels: Int) {
+        openSession()
         val raf = randomAccessFile ?: return
         val punchInByte = punchInSample * channels * 4L
         val punchOutByte = punchOutSample * channels * 4L
@@ -64,15 +71,11 @@ class ScratchpadManager(private val scratchFile: File) {
         raf.seek(punchInByte)
     }
 
-    /**
-     * Appends 32-bit float samples directly to the current file pointer.
-     */
     @Synchronized
     fun writeFloats(floats: FloatArray, count: Int) {
         val raf = randomAccessFile ?: return
         val requiredBytes = count * 4
 
-        // Guarantee a non-null target buffer to satisfy Kotlin compiler strict typing
         val currentBuf = byteBuffer
         val targetBuffer: ByteBuffer = if (currentBuf == null || currentBuf.capacity() < requiredBytes) {
             val newBuf = ByteBuffer.allocateDirect(requiredBytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -93,10 +96,6 @@ class ScratchpadManager(private val scratchFile: File) {
         raf.write(array)
     }
 
-    /**
-     * Stitches shelved downstream audio back onto the end of the new take,
-     * applying a 5ms micro-crossfade at the junction to prevent pops.
-     */
     @Synchronized
     fun spliceTailBack(sampleRate: Int, channels: Int, crossfadeMs: Int = 5) {
         if (!isTailShelved || !tailCacheFile.exists() || tailCacheFile.length() == 0L) {
@@ -166,23 +165,12 @@ class ScratchpadManager(private val scratchFile: File) {
         targetRaf.write(blendedArray)
     }
 
-    /**
-     * Explicitly truncates file if the user deliberately chooses "Overwrite to End".
-     */
-    @Synchronized
-    fun truncateAtSample(sampleIndex: Long, channels: Int) {
-        val raf = randomAccessFile ?: return
-        val byteOffset = sampleIndex * channels * 4L
-        raf.setLength(byteOffset)
-        raf.seek(byteOffset)
-    }
-
     fun sync() {
         randomAccessFile?.fd?.sync()
     }
 
     fun getTotalAudioBytes(): Long {
-        return randomAccessFile?.length() ?: 0L
+        return randomAccessFile?.length() ?: scratchFile.length()
     }
 
     fun close() {

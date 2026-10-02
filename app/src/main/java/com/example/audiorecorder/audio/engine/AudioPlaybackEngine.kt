@@ -25,7 +25,7 @@ interface AudioPlaybackListener {
 
 class AudioPlaybackEngine(
     private val context: Context,
-    private val listener: AudioPlaybackListener? = null
+    var listener: AudioPlaybackListener? = null
 ) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -36,10 +36,6 @@ class AudioPlaybackEngine(
     private val isPaused = AtomicBoolean(false)
     private val isPreRollActive = AtomicBoolean(false)
 
-    /**
-     * Checks if headphones, a headset, or an external USB interface is plugged in.
-     * Prevents feedback loops when monitoring or punching in.
-     */
     fun isHeadsetConnected(): Boolean {
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         return devices.any { device ->
@@ -52,9 +48,6 @@ class AudioPlaybackEngine(
         }
     }
 
-    /**
-     * Standard continuous timeline playback from a given sample index.
-     */
     fun startPlayback(
         scratchFile: File,
         startSample: Long,
@@ -69,38 +62,6 @@ class AudioPlaybackEngine(
 
         isPreRollActive.set(false)
         return initializeAndStart(scratchFile, startSample, endSample = null, sampleRate, channels)
-    }
-
-    /**
-     * 3-Second Pre-Roll Count-in.
-     * Plays the audio leading up to [targetPunchSample], fires count-in ticks (3, 2, 1),
-     * and stops immediately upon hitting the boundary, signaling the recording engine to take over.
-     */
-    fun startPreRoll(
-        scratchFile: File,
-        targetPunchSample: Long,
-        sampleRate: Int,
-        channels: Int,
-        preRollSeconds: Int = 3
-    ): Boolean {
-        if (isPlaying.get()) stopPlayback()
-        if (!scratchFile.exists() || scratchFile.length() == 0L) {
-            // No prior audio exists; immediately trigger completion
-            listener?.onPreRollFinished()
-            return true
-        }
-
-        val preRollSampleCount = preRollSeconds.toLong() * sampleRate
-        val startSample = max(0L, targetPunchSample - preRollSampleCount)
-
-        isPreRollActive.set(true)
-        return initializeAndStart(
-            scratchFile = scratchFile,
-            startSample = startSample,
-            endSample = targetPunchSample,
-            sampleRate = sampleRate,
-            channels = channels
-        )
     }
 
     private fun initializeAndStart(
@@ -188,8 +149,12 @@ class AudioPlaybackEngine(
         val floatBuffer = FloatArray(floatChunkSize)
         val byteBuf = ByteBuffer.wrap(rawBuffer).order(ByteOrder.LITTLE_ENDIAN)
 
+        // Account for RIFF 44-byte header if playing back a finalized WAV file
+        val isWav = scratchFile.name.endsWith(".wav", ignoreCase = true)
+        val headerOffset = if (isWav) 44L else 0L
+
         var currentSample = startSample
-        val startByteOffset = startSample * channels * 4L
+        val startByteOffset = headerOffset + (startSample * channels * 4L)
         var lastSecondsLeft = -1
 
         try {
@@ -212,7 +177,6 @@ class AudioPlaybackEngine(
                         continue
                     }
 
-                    // Check pre-roll boundary limit
                     if (endSample != null && currentSample >= endSample) {
                         break
                     }
@@ -238,7 +202,6 @@ class AudioPlaybackEngine(
                     val framesAdvanced = actualFloatsRead / channels
                     currentSample += framesAdvanced
 
-                    // Calculate time and callbacks
                     val currentMs = (currentSample * 1000L) / sampleRate
                     listener?.onPlaybackTick(currentSample, currentMs)
 
@@ -272,16 +235,12 @@ class AudioPlaybackEngine(
 
     fun pausePlayback() {
         isPaused.set(true)
-        try {
-            audioTrack?.pause()
-        } catch (_: Exception) {}
+        try { audioTrack?.pause() } catch (_: Exception) {}
     }
 
     fun resumePlayback() {
         isPaused.set(false)
-        try {
-            audioTrack?.play()
-        } catch (_: Exception) {}
+        try { audioTrack?.play() } catch (_: Exception) {}
     }
 
     fun stopPlayback() {
@@ -290,7 +249,7 @@ class AudioPlaybackEngine(
 
         try {
             playbackThread?.interrupt()
-            playbackThread?.join(500)
+            playbackThread?.join(300)
         } catch (_: Exception) {}
         playbackThread = null
 
@@ -303,9 +262,7 @@ class AudioPlaybackEngine(
     }
 
     fun release() {
-        try {
-            audioTrack?.release()
-        } catch (_: Exception) {}
+        try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
     }
 

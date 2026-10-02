@@ -46,6 +46,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _newPeakEvent = MutableSharedFlow<Float>(extraBufferCapacity = 128)
     val newPeakEvent: SharedFlow<Float> = _newPeakEvent.asSharedFlow()
 
+    // Shelved peaks for punch-and-roll tail preservation
+    private var shelvedTailPeaks: List<Float> = emptyList()
+
+    // Scrub positions
+    var punchInSampleIndex = 0L
+        private set
+    var punchInPeakIndex = 0
+        private set
+
     // Teleprompter state
     private val _isPrompterVisible = MutableStateFlow(true)
     val isPrompterVisible: StateFlow<Boolean> = _isPrompterVisible.asStateFlow()
@@ -79,6 +88,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _rmsDbfs.value = rms
     }
 
+    fun setScrubPosition(sampleIndex: Long, peakIndex: Int) {
+        punchInSampleIndex = sampleIndex
+        punchInPeakIndex = peakIndex
+    }
+
+    fun preparePunchWaveform(peakIndex: Int) {
+        val current = _waveformPeaks.value
+        if (peakIndex < current.size) {
+            shelvedTailPeaks = current.subList(peakIndex, current.size).toList()
+            _waveformPeaks.value = current.subList(0, peakIndex).toList()
+        } else {
+            shelvedTailPeaks = emptyList()
+        }
+    }
+
+    fun spliceTailPeaksBack() {
+        if (shelvedTailPeaks.isNotEmpty()) {
+            val combined = ArrayList(_waveformPeaks.value)
+            combined.addAll(shelvedTailPeaks)
+            _waveformPeaks.value = combined
+            shelvedTailPeaks = emptyList()
+        }
+    }
+
     fun addLivePeak(peak: Float) {
         val current = _waveformPeaks.value.toMutableList()
         current.add(peak)
@@ -88,10 +121,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setWaveformPeaks(peaks: List<Float>) {
         _waveformPeaks.value = peaks
+        punchInPeakIndex = peaks.size
+        punchInSampleIndex = (peaks.size.toLong() * 25L * _selectedPreset.value.sampleRate) / 1000L
     }
 
     fun clearWaveform() {
         _waveformPeaks.value = emptyList()
+        shelvedTailPeaks = emptyList()
+        punchInPeakIndex = 0
+        punchInSampleIndex = 0L
     }
 
     fun setElapsedMillis(ms: Long) { _elapsedMillis.value = ms }

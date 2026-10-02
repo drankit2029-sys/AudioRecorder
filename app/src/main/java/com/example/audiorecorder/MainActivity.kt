@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -18,7 +19,11 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.audiorecorder.audio.engine.AudioCaptureListener
+import com.example.audiorecorder.audio.engine.AudioPlaybackListener
 import com.example.audiorecorder.audio.engine.AudioRecordingService
 import com.example.audiorecorder.data.db.RecordingEntity
 import com.example.audiorecorder.data.repository.RecordingRepository
@@ -30,6 +35,7 @@ import com.example.audiorecorder.ui.studio.StudioState
 import com.example.audiorecorder.ui.studio.StudioViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -41,7 +47,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-class MainActivity : AppCompatActivity(), AudioCaptureListener {
+class MainActivity : AppCompatActivity(), AudioCaptureListener, AudioPlaybackListener {
 
     private lateinit var binding: ActivityMainBinding
     private val studioViewModel: StudioViewModel by viewModels()
@@ -55,8 +61,10 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as AudioRecordingService.LocalBinder
-            recordingService = binder.getService()
-            recordingService?.serviceListener = this@MainActivity
+            val boundService = binder.getService()
+            recordingService = boundService
+            boundService.serviceListener = this@MainActivity
+            boundService.getPlaybackEngine().listener = this@MainActivity
             isServiceBound = true
         }
 
@@ -85,6 +93,7 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         bindRecordingService()
         setupNavigation()
         setupRecordDock()
+        observePunchAndStudioMode()
 
         supportFragmentManager.beginTransaction()
             .replace(R.id.fragmentContainer, studioFragment)
@@ -145,9 +154,56 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         }
     }
 
+    private fun observePunchAndStudioMode() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    studioViewModel.punchMode.collectLatest { updateDockControls() }
+                }
+                launch {
+                    studioViewModel.studioState.collectLatest { updateDockControls() }
+                }
+            }
+        }
+    }
+
+    private fun updateDockControls() {
+        val state = studioViewModel.studioState.value
+        val mode = studioViewModel.punchMode.value
+
+        if (state == StudioState.RECORDING || state == StudioState.PAUSED) {
+            binding.fabRecord.visibility = View.GONE
+            binding.layoutActiveControls.visibility = View.VISIBLE
+            binding.fabPauseResume.setImageResource(
+                if (state == StudioState.RECORDING) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+            )
+        } else {
+            binding.layoutActiveControls.visibility = View.GONE
+            binding.fabRecord.visibility = View.VISIBLE
+
+            if (mode == PunchMode.PREVIEW) {
+                if (state == StudioState.PREVIEWING) {
+                    binding.fabRecord.setImageResource(android.R.drawable.ic_media_pause)
+                    binding.fabRecord.backgroundTintList = ColorStateList.valueOf(0xFF00E5FF.toInt())
+                } else {
+                    binding.fabRecord.setImageResource(android.R.drawable.ic_media_play)
+                    binding.fabRecord.backgroundTintList = ColorStateList.valueOf(0xFF00E5FF.toInt())
+                }
+            } else {
+                binding.fabRecord.setImageResource(android.R.drawable.ic_btn_speak_now)
+                binding.fabRecord.backgroundTintList = ColorStateList.valueOf(0xFFFF1744.toInt())
+            }
+        }
+    }
+
     private fun setupRecordDock() {
         binding.fabRecord.setOnClickListener {
-            startStudioRecording()
+            val mode = studioViewModel.punchMode.value
+            if (mode == PunchMode.PREVIEW) {
+                toggleStudioPreview()
+            } else {
+                startStudioRecording()
+            }
         }
 
         binding.fabPauseResume.setOnClickListener {
@@ -155,11 +211,9 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
             if (state == StudioState.RECORDING) {
                 recordingService?.pauseRecording()
                 studioViewModel.setStudioState(StudioState.PAUSED)
-                binding.fabPauseResume.setImageResource(android.R.drawable.ic_media_play)
             } else if (state == StudioState.PAUSED) {
                 recordingService?.resumeRecording()
                 studioViewModel.setStudioState(StudioState.RECORDING)
-                binding.fabPauseResume.setImageResource(android.R.drawable.ic_media_pause)
             }
         }
 
@@ -168,20 +222,62 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         }
     }
 
+    fun toggleStudioPreview() {
+        val service = recordingService ?: return
+        val playback = service.getPlaybackEngine()
+
+        if (studioViewModel.studioState.value == StudioState.PREVIEWING) {
+            playback.stopPlayback()
+            studioViewModel.setStudioState(StudioState.IDLE)
+        } else {
+            val rawFile = service.getCrashSentinel().rawFile
+            if (!rawFile.exists() || rawFile.length() == 0L) {
+                Toast.makeText(this, "No recorded audio to audition yet.", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            val preset = studioViewModel.selectedPreset.value
+            val startSample = studioViewModel.punchInSampleIndex
+
+            studioViewModel.setStudioState(StudioState.PREVIEWING)
+            val success = playback.startPlayback(
+                scratchFile = rawFile,
+                startSample = startSample,
+                sampleRate = preset.sampleRate,
+                channels = preset.channels
+            )
+
+            if (!success) {
+                studioViewModel.setStudioState(StudioState.IDLE)
+                Toast.makeText(this, "Could not start timeline audition.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun startStudioRecording() {
         val service = recordingService ?: return
         val preset = studioViewModel.selectedPreset.value
         val mic = studioViewModel.selectedMic.value
+        val scratchpad = service.getScratchpadManager()
 
-        // Starting a fresh take clears existing waveform
-        studioViewModel.clearWaveform()
+        // Stop any running playback
+        service.getPlaybackEngine().stopPlayback()
+
+        val totalBytes = scratchpad.getTotalAudioBytes()
+        val totalSamples = totalBytes / (preset.channels * 4L)
+        val punchSample = studioViewModel.punchInSampleIndex
+
+        if (punchSample < totalSamples && totalSamples > 0L) {
+            // Punch-and-Roll: Shelve downstream tail audio and peaks
+            scratchpad.prepareRangeReplacement(punchSample, punchSample, preset.channels)
+            studioViewModel.preparePunchWaveform(studioViewModel.punchInPeakIndex)
+        } else if (totalSamples == 0L) {
+            studioViewModel.clearWaveform()
+        }
 
         val success = service.startRecording(preset, mic)
         if (success) {
             studioViewModel.setStudioState(StudioState.RECORDING)
-            binding.fabRecord.visibility = View.GONE
-            binding.layoutActiveControls.visibility = View.VISIBLE
-            binding.fabPauseResume.setImageResource(android.R.drawable.ic_media_pause)
         } else {
             Toast.makeText(this, "Could not start audio capture engine.", Toast.LENGTH_SHORT).show()
         }
@@ -189,14 +285,18 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
 
     private fun stopStudioRecording() {
         val service = recordingService ?: return
-        val rawFile = service.stopRecording()
         val preset = studioViewModel.selectedPreset.value
         val scratchpad = service.getScratchpadManager()
 
-        if (studioViewModel.punchMode.value == PunchMode.REPLACE) {
+        service.stopRecording()
+
+        // Splice downstream tail back if it was shelved during punch-in
+        if (scratchpad.isTailShelved) {
             scratchpad.spliceTailBack(preset.sampleRate, preset.channels)
+            studioViewModel.spliceTailPeaksBack()
         }
 
+        // Export take to permanent WAV file in app recordings directory
         val recordingsDir = File(getExternalFilesDir(null), "recordings").apply { if (!exists()) mkdirs() }
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val wavName = "Take_$timeStamp.wav"
@@ -222,10 +322,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         }
 
         studioViewModel.setStudioState(StudioState.IDLE)
-        binding.layoutActiveControls.visibility = View.GONE
-        binding.fabRecord.visibility = View.VISIBLE
-        studioViewModel.setElapsedMillis(0L)
-
         Toast.makeText(this, "Take saved to Library!", Toast.LENGTH_SHORT).show()
     }
 
@@ -233,7 +329,9 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         if (studioViewModel.studioState.value == StudioState.RECORDING) {
             recordingService?.pauseRecording()
             studioViewModel.setStudioState(StudioState.PAUSED)
-            binding.fabPauseResume.setImageResource(android.R.drawable.ic_media_play)
+        } else if (studioViewModel.studioState.value == StudioState.PREVIEWING) {
+            recordingService?.getPlaybackEngine()?.stopPlayback()
+            studioViewModel.setStudioState(StudioState.IDLE)
         }
     }
 
@@ -269,7 +367,7 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
 
         try {
             FileInputStream(file).use { fis ->
-                fis.skip(44) // Skip RIFF WAV header
+                fis.skip(44)
                 val samplesPerWindow = ((sampleRate * 0.025f) * channels).toInt()
                 val byteChunkSize = samplesPerWindow * 4
                 val byteBuf = ByteArray(byteChunkSize)
@@ -290,6 +388,21 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         } catch (_: Exception) {}
         return peaksList
     }
+
+    override fun onPlaybackTick(currentSample: Long, currentMs: Long) {
+        runOnUiThread {
+            studioViewModel.setElapsedMillis(currentMs)
+        }
+    }
+
+    override fun onPlaybackFinished() {
+        runOnUiThread {
+            studioViewModel.setStudioState(StudioState.IDLE)
+        }
+    }
+
+    override fun onPreRollCountdown(secondsRemaining: Int) {}
+    override fun onPreRollFinished() {}
 
     override fun onAudioFrame(peakDbfs: Float, rmsDbfs: Float, peakLinear: Float) {
         runOnUiThread {
