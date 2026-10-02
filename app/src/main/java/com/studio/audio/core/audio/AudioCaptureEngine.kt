@@ -41,10 +41,9 @@ class AudioCaptureEngine(
             bufferSize
         )
 
-        if (targetDevice != null) {
-            record.preferredDevice = targetDevice
-            currentDevice = targetDevice
-        }
+        // Passing null clears the preference and routes to Android's default tuned onboard mic array
+        record.preferredDevice = targetDevice
+        currentDevice = targetDevice
 
         audioRecord = record
         diskWriter.start(destinationFile)
@@ -62,10 +61,7 @@ class AudioCaptureEngine(
         }
     }
 
-    /**
-     * Dynamically switches the hardware mic input without dropping the recording session.
-     */
-    fun switchDevice(newDevice: AudioDeviceInfo): Boolean {
+    fun switchDevice(newDevice: AudioDeviceInfo?): Boolean {
         currentDevice = newDevice
         val record = audioRecord ?: return false
         return record.setPreferredDevice(newDevice)
