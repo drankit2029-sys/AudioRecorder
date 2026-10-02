@@ -33,7 +33,6 @@ class AudioRecordingService : Service(), AudioCaptureListener {
 
     private var activePreset: AudioPreset = AudioPreset.STANDARD_PODCAST
     private var activeMic: DiscoveredMic? = null
-    private var startTimeMillis = 0L
 
     var serviceListener: AudioCaptureListener? = null
 
@@ -57,7 +56,6 @@ class AudioRecordingService : Service(), AudioCaptureListener {
     fun startRecording(preset: AudioPreset, mic: DiscoveredMic?): Boolean {
         activePreset = preset
         activeMic = mic
-        startTimeMillis = System.currentTimeMillis()
 
         crashSentinel.saveSessionState(
             sampleRate = preset.sampleRate,
@@ -107,8 +105,8 @@ class AudioRecordingService : Service(), AudioCaptureListener {
     fun getPlaybackEngine(): AudioPlaybackEngine = playbackEngine
     fun getCrashSentinel(): CrashRecoverySentinel = crashSentinel
 
-    override fun onDbfsUpdate(peakDbfs: Float, rmsDbfs: Float) {
-        serviceListener?.onDbfsUpdate(peakDbfs, rmsDbfs)
+    override fun onAudioFrame(peakDbfs: Float, rmsDbfs: Float, peakLinear: Float) {
+        serviceListener?.onAudioFrame(peakDbfs, rmsDbfs, peakLinear)
     }
 
     override fun onError(errorMessage: String) {
@@ -122,14 +120,12 @@ class AudioRecordingService : Service(), AudioCaptureListener {
             "AudioRecorder::RecordingWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(12 * 60 * 60 * 1000L) // Safety cap: 12 hours
+            acquire(12 * 60 * 60 * 1000L)
         }
     }
 
     private fun releaseWakeLock() {
-        wakeLock?.let {
-            if (it.isHeld) it.release()
-        }
+        wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
     }
 

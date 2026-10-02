@@ -10,11 +10,12 @@ import android.view.View
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 interface WaveformScrubListener {
     fun onScrubStart()
-    fun onScrubbing(sampleOffset: Long)
-    fun onScrubStop(finalSampleOffset: Long)
+    fun onScrubbing(peakIndex: Int)
+    fun onScrubStop(finalPeakIndex: Int)
 }
 
 class WaveformVisualizerView @JvmOverloads constructor(
@@ -23,52 +24,67 @@ class WaveformVisualizerView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#448AFF")
-        strokeWidth = 3f
+    private val density = context.resources.displayMetrics.density
+
+    private val playedBarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF")
+        strokeCap = Paint.Cap.ROUND
+    }
+
+    private val unplayedBarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#455A64")
         strokeCap = Paint.Cap.ROUND
     }
 
     private val playheadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FF5252")
-        strokeWidth = 4f
+        color = Color.parseColor("#FF3D71")
+        strokeWidth = 2.5f * density
     }
 
-    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2A2E33")
-        strokeWidth = 1f
+    private val baselinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#1F2429")
+        strokeWidth = 1f * density
     }
 
-    // Historical peak amplitudes (min/max pairs normalized -1.0 to 1.0)
-    private val samplePeaks = mutableListOf<Float>()
-    private var zoomScale = 1.0f // 0.25f (zoomed out) to 4.0f (zoomed in)
-    private var playheadSampleIndex = 0L
-    private var totalSamples = 0L
+    private val peaks = ArrayList<Float>()
+    private var playheadIndex = 0
+    private var zoomFactor = 1.0f // 0.5f to 3.0f
 
     var scrubListener: WaveformScrubListener? = null
     private var isScrubbing = false
     private var lastTouchX = 0f
 
-    fun addLiveSamplePeak(peak: Float) {
-        samplePeaks.add(min(1.0f, max(-1.0f, peak)))
-        totalSamples++
-        playheadSampleIndex = totalSamples
+    fun setPeaks(initialPeaks: List<Float>) {
+        peaks.clear()
+        peaks.addAll(initialPeaks)
+        playheadIndex = peaks.size
+        postInvalidate()
+    }
+
+    fun addLivePeak(peak: Float) {
+        peaks.add(min(1.0f, max(0.0f, peak)))
+        playheadIndex = peaks.size
         postInvalidateOnAnimation()
     }
 
-    fun setPlaybackPosition(sampleIndex: Long, total: Long) {
-        playheadSampleIndex = sampleIndex
-        totalSamples = total
+    fun setPlayheadIndex(index: Int) {
+        playheadIndex = max(0, min(peaks.size, index))
         postInvalidateOnAnimation()
+    }
+
+    fun clear() {
+        peaks.clear()
+        playheadIndex = 0
+        postInvalidate()
     }
 
     fun zoomIn() {
-        zoomScale = min(4.0f, zoomScale * 1.25f)
+        zoomFactor = min(3.0f, zoomFactor * 1.25f)
         postInvalidate()
     }
 
     fun zoomOut() {
-        zoomScale = max(0.25f, zoomScale / 1.25f)
+        zoomFactor = max(0.5f, zoomFactor / 1.25f)
         postInvalidate()
     }
 
@@ -86,20 +102,20 @@ class WaveformVisualizerView @JvmOverloads constructor(
                     val deltaX = event.x - lastTouchX
                     lastTouchX = event.x
 
-                    // Translate pixels into sample units based on zoom
-                    val samplesPerPixel = (100f / zoomScale).toLong()
-                    val sampleDelta = (deltaX * samplesPerPixel).toLong()
-
-                    playheadSampleIndex = max(0L, min(totalSamples, playheadSampleIndex - sampleDelta))
-                    scrubListener?.onScrubbing(playheadSampleIndex)
-                    postInvalidate()
+                    val stepPx = (4.0f * density) * zoomFactor
+                    val indexDelta = (deltaX / stepPx).toInt()
+                    if (indexDelta != 0) {
+                        playheadIndex = max(0, min(peaks.size, playheadIndex - indexDelta))
+                        scrubListener?.onScrubbing(playheadIndex)
+                        postInvalidate()
+                    }
                 }
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (isScrubbing) {
                     isScrubbing = false
-                    scrubListener?.onScrubStop(playheadSampleIndex)
+                    scrubListener?.onScrubStop(playheadIndex)
                     parent?.requestDisallowInterceptTouchEvent(false)
                 }
                 return true
@@ -113,28 +129,38 @@ class WaveformVisualizerView @JvmOverloads constructor(
 
         val w = width.toFloat()
         val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+
         val centerY = h / 2f
         val centerX = w / 2f
 
-        // 1. Center guideline
-        canvas.drawLine(0f, centerY, w, centerY, gridPaint)
+        // Center timeline axis
+        canvas.drawLine(0f, centerY, w, centerY, baselinePaint)
 
-        // 2. Draw historical audio peaks scrolling under stationary center playhead
-        val stepPixels = 4f * zoomScale
-        val playheadFloat = playheadSampleIndex.toFloat()
+        val barWidth = 2.5f * density * zoomFactor
+        val barGap = 1.5f * density * zoomFactor
+        val step = barWidth + barGap
 
-        if (samplePeaks.isNotEmpty()) {
-            for (i in samplePeaks.indices) {
-                // Determine horizontal offset relative to center playhead
-                val x = centerX + ((i - playheadFloat) * (stepPixels / 100f))
-                if (x < -10f || x > w + 10f) continue // Frustum culling
+        playedBarPaint.strokeWidth = barWidth
+        unplayedBarPaint.strokeWidth = barWidth
 
-                val amplitude = abs(samplePeaks[i]) * (h * 0.45f)
-                canvas.drawLine(x, centerY - amplitude, x, centerY + amplitude, wavePaint)
-            }
+        val maxHalfAmp = (h * 0.44f)
+
+        // Draw waveform bars scrolling past the fixed center playhead
+        for (i in peaks.indices) {
+            val x = centerX + ((i - playheadIndex) * step)
+            if (x < -10f || x > w + 10f) continue
+
+            // Perceptual dynamic expansion: pow(peak, 0.6)
+            val linearPeak = peaks[i]
+            val scaledPeak = linearPeak.toDouble().pow(0.6).toFloat()
+            val amp = max(2f * density, scaledPeak * maxHalfAmp)
+
+            val paint = if (i <= playheadIndex) playedBarPaint else unplayedBarPaint
+            canvas.drawLine(x, centerY - amp, x, centerY + amp, paint)
         }
 
-        // 3. Fixed center playhead
+        // Stationary Center Playhead
         canvas.drawLine(centerX, 0f, centerX, h, playheadPaint)
     }
 }

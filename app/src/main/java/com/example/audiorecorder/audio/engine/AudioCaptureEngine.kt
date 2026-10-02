@@ -9,9 +9,10 @@ import com.example.audiorecorder.audio.dsp.DbfsCalculator
 import com.example.audiorecorder.audio.hardware.DiscoveredMic
 import com.example.audiorecorder.audio.scratchpad.ScratchpadManager
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 interface AudioCaptureListener {
-    fun onDbfsUpdate(peakDbfs: Float, rmsDbfs: Float)
+    fun onAudioFrame(peakDbfs: Float, rmsDbfs: Float, peakLinear: Float)
     fun onError(errorMessage: String)
 }
 
@@ -25,9 +26,6 @@ class AudioCaptureEngine(
     private val isRecording = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
 
-    /**
-     * Initializes and launches the AudioRecord float capture thread.
-     */
     @SuppressLint("MissingPermission")
     fun startCapture(
         sampleRate: Int,
@@ -54,12 +52,11 @@ class AudioCaptureEngine(
             AudioFormat.ENCODING_PCM_FLOAT
         )
 
-        if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+        if (minBufferSize <= 0) {
             listener?.onError("Invalid hardware audio buffer configuration.")
             return false
         }
 
-        // Allocate a working buffer of at least 2x minBufferSize for stability
         val bufferSize = minBufferSize * 2
 
         try {
@@ -69,7 +66,6 @@ class AudioCaptureEngine(
                 .setBufferSizeInBytes(bufferSize)
                 .build()
 
-            // Route audio to specific physical endpoint if requested
             if (targetMic != null) {
                 recordInstance.preferredDevice = targetMic.rawDeviceInfo
             }
@@ -86,10 +82,9 @@ class AudioCaptureEngine(
             isRecording.set(true)
             isPaused.set(false)
 
-            // Start capture thread with high audio priority
             recordingThread = Thread({
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-                captureLoop(bufferSize / 4) // 4 bytes per float
+                captureLoop(bufferSize / 4)
             }, "AudioCaptureThread").apply {
                 start()
             }
@@ -117,20 +112,27 @@ class AudioCaptureEngine(
                 continue
             }
 
-            // Blocking read for 32-bit IEEE float samples
             val readCount = record.read(floatBuffer, 0, floatChunkSize, AudioRecord.READ_BLOCKING)
 
             if (readCount > 0) {
-                // 1. Direct synchronous write to the scratchpad
                 scratchpadManager.writeFloats(floatBuffer, readCount)
 
-                // 2. Throttle UI metrics updates to ~60 Hz (every 16 ms)
                 val now = System.currentTimeMillis()
-                if (now - lastMetricsPostTime >= 16) {
+                // Throttle emission to ~40Hz (every 25ms) for visualizer stability
+                if (now - lastMetricsPostTime >= 25) {
                     lastMetricsPostTime = now
-                    val peak = DbfsCalculator.calculatePeakDbfs(floatBuffer, readCount)
-                    val rms = DbfsCalculator.calculateRmsDbfs(floatBuffer, readCount)
-                    listener?.onDbfsUpdate(peak, rms)
+
+                    var peakLinear = 0.0f
+                    for (i in 0 until readCount) {
+                        val sampleAbs = abs(floatBuffer[i])
+                        if (sampleAbs > peakLinear) {
+                            peakLinear = sampleAbs
+                        }
+                    }
+
+                    val peakDbfs = DbfsCalculator.calculatePeakDbfs(floatBuffer, readCount)
+                    val rmsDbfs = DbfsCalculator.calculateRmsDbfs(floatBuffer, readCount)
+                    listener?.onAudioFrame(peakDbfs, rmsDbfs, peakLinear)
                 }
             } else if (readCount < 0) {
                 listener?.onError("AudioRecord read error code: $readCount")
@@ -139,13 +141,8 @@ class AudioCaptureEngine(
         }
     }
 
-    fun pauseCapture() {
-        isPaused.set(true)
-    }
-
-    fun resumeCapture() {
-        isPaused.set(false)
-    }
+    fun pauseCapture() { isPaused.set(true) }
+    fun resumeCapture() { isPaused.set(false) }
 
     fun stopCapture() {
         isRecording.set(false)

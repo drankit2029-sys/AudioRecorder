@@ -34,6 +34,8 @@ class StudioFragment : Fragment(), WaveformScrubListener {
         super.onViewCreated(view, savedInstanceState)
         binding.waveformVisualizerView.scrubListener = this
 
+        binding.waveformVisualizerView.setPeaks(viewModel.waveformPeaks.value)
+
         setupPrompterControls()
         setupActionPills()
         setupZoomControls()
@@ -54,7 +56,6 @@ class StudioFragment : Fragment(), WaveformScrubListener {
         }
         binding.btnMirror.setOnClickListener { binding.teleprompterView.toggleMirror() }
 
-        // Tuning Steppers
         binding.tvWordsInc.setOnClickListener { viewModel.adjustWordsPerLine(1) }
         binding.tvWordsDec.setOnClickListener { viewModel.adjustWordsPerLine(-1) }
         binding.tvSpeedInc.setOnClickListener {
@@ -77,7 +78,7 @@ class StudioFragment : Fragment(), WaveformScrubListener {
 
     private fun setupActionPills() {
         binding.btnMicSelector.setOnClickListener { showMicrophonePicker() }
-        binding.btnPresetSelector.setOnClickListener { /* Open preset dialog */ }
+        binding.btnPresetSelector.setOnClickListener { }
         binding.btnPrompterToggle.setOnClickListener {
             viewModel.togglePrompterVisibility()
             binding.layoutPrompterContainer.visibility =
@@ -102,6 +103,16 @@ class StudioFragment : Fragment(), WaveformScrubListener {
                 launch {
                     viewModel.elapsedMillis.collectLatest { ms ->
                         binding.tvTimecode.text = TimecodeFormatter.formatMillis(ms)
+                        // In playback or non-recording states, advance visualizer playhead
+                        if (viewModel.studioState.value != StudioState.RECORDING) {
+                            val targetIndex = (ms / 25L).toInt()
+                            binding.waveformVisualizerView.setPlayheadIndex(targetIndex)
+                        }
+                    }
+                }
+                launch {
+                    viewModel.newPeakEvent.collect { peak ->
+                        binding.waveformVisualizerView.addLivePeak(peak)
                     }
                 }
                 launch {
@@ -157,15 +168,15 @@ class StudioFragment : Fragment(), WaveformScrubListener {
         (activity as? MainActivity)?.pauseActiveAudioForScrub()
     }
 
-    override fun onScrubbing(sampleOffset: Long) {
-        val preset = viewModel.selectedPreset.value
-        val ms = TimecodeFormatter.samplesToMillis(sampleOffset, preset.sampleRate)
+    override fun onScrubbing(peakIndex: Int) {
+        val ms = peakIndex.toLong() * 25L
         viewModel.setElapsedMillis(ms)
     }
 
-    override fun onScrubStop(finalSampleOffset: Long) {
+    override fun onScrubStop(finalPeakIndex: Int) {
         val preset = viewModel.selectedPreset.value
-        (activity as? MainActivity)?.seekScratchpadToSample(finalSampleOffset, preset.channels)
+        val sampleOffset = (finalPeakIndex.toLong() * 25L * preset.sampleRate) / 1000L
+        (activity as? MainActivity)?.seekScratchpadToSample(sampleOffset, preset.channels)
     }
 
     override fun onDestroyView() {

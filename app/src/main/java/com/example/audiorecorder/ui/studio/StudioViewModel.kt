@@ -4,8 +4,11 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.example.audiorecorder.audio.hardware.AudioPreset
 import com.example.audiorecorder.audio.hardware.DiscoveredMic
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.max
 import kotlin.math.min
@@ -35,6 +38,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _elapsedMillis = MutableStateFlow(0L)
     val elapsedMillis: StateFlow<Long> = _elapsedMillis.asStateFlow()
+
+    // Waveform peak stream & history
+    private val _waveformPeaks = MutableStateFlow<List<Float>>(emptyList())
+    val waveformPeaks: StateFlow<List<Float>> = _waveformPeaks.asStateFlow()
+
+    private val _newPeakEvent = MutableSharedFlow<Float>(extraBufferCapacity = 128)
+    val newPeakEvent: SharedFlow<Float> = _newPeakEvent.asSharedFlow()
 
     // Teleprompter state
     private val _isPrompterVisible = MutableStateFlow(true)
@@ -67,6 +77,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateDbfs(peak: Float, rms: Float) {
         _peakDbfs.value = peak
         _rmsDbfs.value = rms
+    }
+
+    fun addLivePeak(peak: Float) {
+        val current = _waveformPeaks.value.toMutableList()
+        current.add(peak)
+        _waveformPeaks.value = current
+        _newPeakEvent.tryEmit(peak)
+    }
+
+    fun setWaveformPeaks(peaks: List<Float>) {
+        _waveformPeaks.value = peaks
+    }
+
+    fun clearWaveform() {
+        _waveformPeaks.value = emptyList()
     }
 
     fun setElapsedMillis(ms: Long) { _elapsedMillis.value = ms }

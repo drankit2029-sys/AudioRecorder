@@ -31,10 +31,15 @@ import com.example.audiorecorder.ui.studio.StudioViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity(), AudioCaptureListener {
 
@@ -81,7 +86,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         setupNavigation()
         setupRecordDock()
 
-        // Default viewport to Studio
         supportFragmentManager.beginTransaction()
             .replace(R.id.fragmentContainer, studioFragment)
             .commit()
@@ -92,19 +96,14 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, windowInsets ->
             val systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-
-            // Push fragment viewport down past the status bar & sides past camera cutouts
             binding.fragmentContainer.updatePadding(
                 left = systemBars.left,
                 top = systemBars.top,
                 right = systemBars.right
             )
-
-            // Extend bottom dock background behind navigation bar while keeping controls accessible
             binding.bottomDock.updatePadding(
                 bottom = initialDockBottomPadding + systemBars.bottom
             )
-
             windowInsets
         }
     }
@@ -124,7 +123,7 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
 
     private fun bindRecordingService() {
         val intent = Intent(this, AudioRecordingService::class.java)
-        startService(intent) // Keep service running in background
+        startService(intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
@@ -147,12 +146,10 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
     }
 
     private fun setupRecordDock() {
-        // Idle Record Button
         binding.fabRecord.setOnClickListener {
             startStudioRecording()
         }
 
-        // Active State Pause / Resume
         binding.fabPauseResume.setOnClickListener {
             val state = studioViewModel.studioState.value
             if (state == StudioState.RECORDING) {
@@ -166,7 +163,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
             }
         }
 
-        // Active State Stop & Commit
         binding.fabStop.setOnClickListener {
             stopStudioRecording()
         }
@@ -176,6 +172,9 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         val service = recordingService ?: return
         val preset = studioViewModel.selectedPreset.value
         val mic = studioViewModel.selectedMic.value
+
+        // Starting a fresh take clears existing waveform
+        studioViewModel.clearWaveform()
 
         val success = service.startRecording(preset, mic)
         if (success) {
@@ -194,12 +193,10 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         val preset = studioViewModel.selectedPreset.value
         val scratchpad = service.getScratchpadManager()
 
-        // Handle punch-out tail splicing if range replace was active
         if (studioViewModel.punchMode.value == PunchMode.REPLACE) {
             scratchpad.spliceTailBack(preset.sampleRate, preset.channels)
         }
 
-        // Finalize take to WAV file in app recordings directory
         val recordingsDir = File(getExternalFilesDir(null), "recordings").apply { if (!exists()) mkdirs() }
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val wavName = "Take_$timeStamp.wav"
@@ -208,7 +205,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         scratchpad.exportToFloatWav(destWav, preset.sampleRate, preset.channels)
         service.getCrashSentinel().clearSession()
 
-        // Insert database record
         val durationMs = service.getElapsedMillis()
         val entity = RecordingEntity(
             title = "Take $timeStamp",
@@ -225,7 +221,6 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
             RecordingRepository.getInstance(this@MainActivity).insertRecording(entity)
         }
 
-        // Reset Dock UI
         studioViewModel.setStudioState(StudioState.IDLE)
         binding.layoutActiveControls.visibility = View.GONE
         binding.fabRecord.visibility = View.VISIBLE
@@ -257,13 +252,51 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
     }
 
     fun loadRecordingIntoStudio(recording: RecordingEntity) {
-        binding.btnNavStudio.performClick()
-        Toast.makeText(this, "Loaded '${recording.title}' into Studio", Toast.LENGTH_SHORT).show()
+        CoroutineScope(Dispatchers.IO).launch {
+            val extractedPeaks = extractWaveformPeaksFromWav(File(recording.filePath), recording.sampleRate, recording.channelCount)
+            withContext(Dispatchers.Main) {
+                studioViewModel.setWaveformPeaks(extractedPeaks)
+                studioViewModel.setElapsedMillis(recording.durationMs)
+                binding.btnNavStudio.performClick()
+                Toast.makeText(this@MainActivity, "Loaded '${recording.title}'", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
-    override fun onDbfsUpdate(peakDbfs: Float, rmsDbfs: Float) {
+    private fun extractWaveformPeaksFromWav(file: File, sampleRate: Int, channels: Int): List<Float> {
+        val peaksList = ArrayList<Float>()
+        if (!file.exists() || file.length() <= 44L) return peaksList
+
+        try {
+            FileInputStream(file).use { fis ->
+                fis.skip(44) // Skip RIFF WAV header
+                val samplesPerWindow = ((sampleRate * 0.025f) * channels).toInt()
+                val byteChunkSize = samplesPerWindow * 4
+                val byteBuf = ByteArray(byteChunkSize)
+                val direct = ByteBuffer.wrap(byteBuf).order(ByteOrder.LITTLE_ENDIAN)
+
+                var read: Int
+                while (fis.read(byteBuf).also { read = it } > 0) {
+                    val floatsRead = read / 4
+                    direct.position(0)
+                    var peak = 0.0f
+                    for (i in 0 until floatsRead) {
+                        val s = abs(direct.getFloat())
+                        if (s > peak) peak = s
+                    }
+                    peaksList.add(peak)
+                }
+            }
+        } catch (_: Exception) {}
+        return peaksList
+    }
+
+    override fun onAudioFrame(peakDbfs: Float, rmsDbfs: Float, peakLinear: Float) {
         runOnUiThread {
             studioViewModel.updateDbfs(peakDbfs, rmsDbfs)
+            if (studioViewModel.studioState.value == StudioState.RECORDING) {
+                studioViewModel.addLivePeak(peakLinear)
+            }
             recordingService?.let {
                 studioViewModel.setElapsedMillis(it.getElapsedMillis())
             }
