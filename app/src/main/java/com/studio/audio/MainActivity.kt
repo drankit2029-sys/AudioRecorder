@@ -13,6 +13,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             StudioTheme {
+              val permissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { /* handle granted / denied */ }
+
+                LaunchedEffect(Unit) {
+                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
                 StudioScreen()
             }
         }
