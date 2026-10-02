@@ -1,0 +1,35 @@
+
+================================================================================
+REVISED UI & INTERACTION BLUEPRINT (V2 SPECIFICATION)
+================================================================================
+
+1. Studio Layout Structure:
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │ 1. Teleprompter Container (Collapsible, Auto-scroll, Mirror mode)     │
+   ├────────────────────────────────────────────────────────────────────────┤
+   │ 2. Waveform Visualizer & Zoom (+ / -)                                  │
+   │    - Center stationary playhead (red vertical line).                   │
+   │    - 40 Hz dynamic peaks (y = peak^0.6 dynamic expansion).             │
+   │    - Caliper boundary handles (In / Out) when Trim or S&R is active.   │
+   ├────────────────────────────────────────────────────────────────────────┤
+   │ 3. Control & Metrics Strip                                             │
+   │    [dBFS Meter] [ 00:00:00.000 ]          [ ⏯ In-Studio Play/Pause ]   │
+   │                                                                        │
+   │    Row 1 Pills:                                                        │
+   │    [🎙 Built-in] [🎛 48kHz] [🗎 Prompter] [⎌ Replace]                   │
+   │                                                                        │
+   │    Row 2 Pills (Precision Edits - Enabled only in Preview Mode):       │
+   │    [✂ Trim]                            [⎘ Select & Replace]            │
+   ├────────────────────────────────────────────────────────────────────────┤
+   │ 4. Persistent Dock & Bottom Inset                                      │
+   │    [Library]          [ Morphing Action FAB ]                 [Studio] │
+   │                       - Normal EOF: 🔴 Record                         │
+   │                       - Preview Mode: 🔷 Play/Pause (Audition)         │
+   │                       - Active Record: ⏸ Pause + ⏹ Stop/Save           │
+   └────────────────────────────────────────────────────────────────────────┘
+
+2. Service Lifecycle & Task Behavior:
+   - Clean Session Teardown on Swipe:
+     android:stopWithTask="true" declared in AndroidManifest.xml and onTaskRemoved()
+     overridden in AudioRecordingService to flush active buffers, stop the wake lock,
+     and unbind cleanly without leaving zombie background processes.

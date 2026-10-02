@@ -321,3 +321,63 @@ MODIFICATION LOG: SCRATCHPADMANAGER TAIL CACHE & RANGE SPLICING
     Sample[n] = End[n] * (1 - a) + Tail[n] * a
   • Retained `truncateAtSample()` strictly for explicit user-confirmed retakes.
 ================================================================================
+
+================================================================================
+REVISED ENGINE STATE MACHINE & SESSION ARCHITECTURE (V2 SPECIFICATION)
+================================================================================
+
+1. Core Engine States:
+   - RECORDING: Hardware AudioRecord actively captures 32-bit float PCM buffers,
+     computes 40 Hz perceptual waveform peaks and dBFS metrics, and writes directly
+     to ScratchpadManager (active_studio.raw).
+   - IDLE: AudioRecord is detached. AudioPlaybackEngine can stream from the current
+     playhead position on demand.
+
+2. Timeline Sub-Modes:
+   - NORMAL (At EOF, Playhead == Duration):
+     * Append mode active.
+     * Dock FAB displays Red Record.
+     * Edit pills (Replace, Trim, Select & Replace) are strictly DISABLED.
+   - PREVIEW MODE (Playhead < Duration):
+     * Entered automatically whenever the user scrubs the waveform before EOF.
+     * If user scrubs during recording (active or paused), recording halts immediately,
+       flushes to disk, and enters Preview Mode.
+     * Dock FAB morphs to Cyan Play/Pause (Audition).
+     * Edit pills (Replace, Trim, Select & Replace) become ENABLED.
+     * Reswitches to Normal mode when playhead is scrubbed back to track end.
+
+3. Edit Pill Exclusivity & Interaction Rules:
+   - Row 1: [🎙 Built-in] [🎛 48kHz] [🗎 Prompter] [⎌ Replace]
+   - Row 2: [✂ Trim] [⎘ Select & Replace]
+   - Only ONE edit pill can be active at any given moment:
+     * Activating Replace turns off Trim and Select & Replace.
+     * Activating Trim turns off Replace and Select & Replace.
+     * Activating Select & Replace turns off Replace and Trim.
+
+4. Seamless In-Place Replace Workflow:
+   - In Preview mode, user auditions audio.
+   - Tapping [⎌ Replace] instantly silences the speaker/headphone output, arms the
+     microphone, and starts overwriting the scratchpad at the exact playhead position
+     with a 5ms boundary micro-crossfade.
+   - Tapping [⎌ Replace] again to disable immediately stops capture, re-engages
+     Preview mode, and resumes audition playback downstream from where recording stopped.
+
+5. Staged Edit Operations:
+   - [✂ Trim] (2-Stage):
+     * Stage 1: Waveform visualizer displays draggable In and Out boundary calipers.
+       Preview mode remains active to audition the selected loop.
+     * Stage 2: User taps Apply, prompting:
+       1) Cut (Delete Selected): Stitches head and tail with a 5ms crossfade.
+       2) Crop (Keep Selected): Truncates head and tail, preserving only the marked range.
+   - [⎘ Select & Replace] (2-Stage):
+     * Stage 1: User sets In and Out calipers around the flubbed passage. Preview remains active.
+     * Stage 2: User taps Punch Range. Engine triggers 3-2-1 pre-roll countdown.
+       Tail audio from Out to EOF is shelved in tail_cache.raw. At marker In, recording
+       activates until Out (or manual Stop), followed by an automatic tail splice with crossfades.
+
+6. Build Toolchain Lock:
+   - AGP: 8.5.2
+   - Gradle Runner: 8.7
+   - Kotlin: 1.9.24
+   - Android SDK: compileSdk = 36, targetSdk = 36 (android.suppressUnsupportedCompileSdk=36)
+   - Dependencies: androidx.recyclerview:1.3.2 explicit; Room 2.6.1 with kapt; Flow.combine capped at <=5 params.
