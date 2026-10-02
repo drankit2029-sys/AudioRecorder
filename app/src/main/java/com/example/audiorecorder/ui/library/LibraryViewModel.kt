@@ -15,8 +15,16 @@ import kotlinx.coroutines.launch
 import java.util.Calendar
 
 enum class DateFilter { ALL, TODAY, PAST_WEEK, PAST_MONTH }
-enum class DurationFilter { ALL, SHORT, MEDIUM, LONG } // <1 min, 1-10 min, >10 min
+enum class DurationFilter { ALL, SHORT, MEDIUM, LONG }
 enum class SortOption { DATE_DESC, DATE_ASC, TITLE_ASC, TITLE_DESC, DURATION_DESC, SIZE_DESC }
+
+data class FilterCriteria(
+    val query: String = "",
+    val dateFilter: DateFilter = DateFilter.ALL,
+    val durationFilter: DurationFilter = DurationFilter.ALL,
+    val formatFilter: String = "ALL",
+    val sortOption: SortOption = SortOption.DATE_DESC
+)
 
 class LibraryViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -43,15 +51,30 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     private val _isMultiSelectMode = MutableStateFlow(false)
     val isMultiSelectMode: StateFlow<Boolean> = _isMultiSelectMode.asStateFlow()
 
-    val recordings: StateFlow<List<RecordingEntity>> = combine(
-        repository.allActiveRecordings,
+    // Combine 5 filter flows into typed FilterCriteria
+    private val filterCriteria = combine(
         _searchQuery,
         _dateFilter,
         _durationFilter,
         _formatFilter,
         _sortOption
-    ) { all, query, dateF, durF, formatF, sortOpt ->
-        filterAndSort(all, query, dateF, durF, formatF, sortOpt)
+    ) { query, dateF, durF, formatF, sortOpt ->
+        FilterCriteria(query, dateF, durF, formatF, sortOpt)
+    }
+
+    // Combine database recordings with typed criteria
+    val recordings: StateFlow<List<RecordingEntity>> = combine(
+        repository.allActiveRecordings,
+        filterCriteria
+    ) { all, criteria ->
+        filterAndSort(
+            list = all,
+            query = criteria.query,
+            dateF = criteria.dateFilter,
+            durF = criteria.durationFilter,
+            formatF = criteria.formatFilter,
+            sortOpt = criteria.sortOption
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private fun filterAndSort(
