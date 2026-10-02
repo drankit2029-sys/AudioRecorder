@@ -1,3 +1,121 @@
+#!/bin/sh
+set -e
+
+BASE="app/src/main/java/com/example/audiorecorder"
+RES="app/src/main/res"
+
+echo "==> 1. Updating activity_main.xml to handle dynamic dock insets..."
+cat << 'ACT_XML' > "$RES/layout/activity_main.xml"
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootContainer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#101214">
+
+    <!-- Fragment Host Viewport -->
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/fragmentContainer"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@+id/bottomDock"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Bottom Persistent Dock & Morphing Controls -->
+    <LinearLayout
+        android:id="@+id/bottomDock"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:minHeight="76dp"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="#16181B"
+        android:paddingHorizontal="24dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <!-- Navigation: Library / Studio Switcher -->
+        <Button
+            android:id="@+id/btnNavLibrary"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Library"
+            android:textColor="#FFFFFF" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- Idle State Record Button -->
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabRecord"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#FF1744"
+            app:tint="#FFFFFF"
+            android:src="@android:drawable/ic_btn_speak_now"
+            app:fabSize="normal"
+            android:contentDescription="Record" />
+
+        <!-- Active State Morphing Controls (Pause + Stop) -->
+        <LinearLayout
+            android:id="@+id/layoutActiveControls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:visibility="gone">
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/fabPauseResume"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="16dp"
+                android:backgroundTint="#FFD600"
+                app:tint="#121416"
+                android:src="@android:drawable/ic_media_pause"
+                app:fabSize="mini"
+                android:contentDescription="Pause or Resume" />
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/fabStop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:backgroundTint="#FF1744"
+                app:tint="#FFFFFF"
+                android:src="@android:drawable/ic_menu_save"
+                app:fabSize="normal"
+                android:contentDescription="Stop and Save" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/btnNavStudio"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Studio"
+            android:textColor="#448AFF" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+ACT_XML
+
+echo "==> 2. Patching MainActivity.kt with WindowInsetsCompat handler..."
+cat << 'MAIN_ACT' > "$BASE/MainActivity.kt"
 package com.example.audiorecorder
 
 import android.Manifest
@@ -284,3 +402,7 @@ class MainActivity : AppCompatActivity(), AudioCaptureListener {
         }
     }
 }
+MAIN_ACT
+
+echo "==> 3. Triggering deploy script..."
+./deploy.sh "Apply WindowInsetsCompat systemBars handling to resolve status and navigation bar overlap"
