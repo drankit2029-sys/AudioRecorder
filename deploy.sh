@@ -38,7 +38,15 @@ if [ -z "$RUN_ID" ]; then
 fi
 
 echo "==> 4. Monitoring build (Run ID: $RUN_ID)..."
-gh run watch "$RUN_ID"
+if ! gh run watch "$RUN_ID"; then
+    echo ""
+    echo "==================== BUILD FAILED ===================="
+    echo "==> Implicated files and errors:"
+    gh run view "$RUN_ID" --log-failed | grep -E "(^e: .*:[0-9]+|FAILURE: Build failed)" || gh run view "$RUN_ID" --log-failed | tail -n 30
+    echo "======================================================"
+    exit 1
+fi
+
 
 echo "==> 5. Downloading compiled APK..."
 DEST_DIR="/sdcard/Download"
