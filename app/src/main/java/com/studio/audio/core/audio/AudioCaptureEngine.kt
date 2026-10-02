@@ -24,7 +24,8 @@ class AudioCaptureEngine(
         scope: CoroutineScope,
         targetDevice: AudioDeviceInfo?,
         sampleRate: Int = 48000,
-        destinationFile: File
+        destinationFile: File,
+        append: Boolean = false
     ) {
         if (isRecording.get()) return
 
@@ -41,12 +42,11 @@ class AudioCaptureEngine(
             bufferSize
         )
 
-        // Passing null clears the preference and routes to Android's default tuned onboard mic array
         record.preferredDevice = targetDevice
         currentDevice = targetDevice
 
         audioRecord = record
-        diskWriter.start(destinationFile)
+        diskWriter.start(destinationFile, append = append)
         isRecording.set(true)
         record.startRecording()
 

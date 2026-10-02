@@ -11,10 +11,11 @@ class AudioDiskWriter {
     private var activeFile: File? = null
 
     @Synchronized
-    fun start(destinationFile: File) {
+    fun start(destinationFile: File, append: Boolean = false) {
         stop()
         activeFile = destinationFile
-        outputStream = BufferedOutputStream(FileOutputStream(destinationFile), 64 * 1024)
+        // Enable append mode to resume writing from the EOF position
+        outputStream = BufferedOutputStream(FileOutputStream(destinationFile, append), 64 * 1024)
     }
 
     @Synchronized

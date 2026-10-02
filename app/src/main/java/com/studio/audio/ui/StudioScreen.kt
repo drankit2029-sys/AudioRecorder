@@ -18,17 +18,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studio.audio.core.audio.AudioInputDevice
+import com.studio.audio.core.audio.InterruptedSession
 
 @Composable
 fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     val devices by viewModel.availableDevices.collectAsState()
     val selectedDevice by viewModel.selectedDevice.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
+    val interruptedSession by viewModel.interruptedSession.collectAsState()
     var showDeviceDialog by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        viewModel.refreshDevices()
-    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -46,7 +44,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 .statusBarsPadding()
                 .padding(innerPadding)
         ) {
-            // 1. Teleprompter Container
             SectionPlaceholder(
                 title = "1. Teleprompter Container",
                 modifier = Modifier
@@ -54,7 +51,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                     .weight(0.8f)
             )
 
-            // 2. Waveform Visualizer
             SectionPlaceholder(
                 title = "2. Waveform Visualizer",
                 modifier = Modifier
@@ -62,7 +58,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                     .weight(1.2f)
             )
 
-            // 3. Control & Metrics Strip (with Device Selection Pill)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -72,13 +67,12 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                     .padding(12.dp)
             ) {
                 Text(
-                    text = if (isRecording) "RECORDING ACTIVE (Writing raw PCM)" else "STANDBY",
+                    text = if (isRecording) "RECORDING ACTIVE" else "STANDBY",
                     color = if (isRecording) Color(0xFFE53935) else Color.Gray,
                     style = MaterialTheme.typography.labelSmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Blueprint Row 1: Input Hardware Pill Button
                 Row(modifier = Modifier.fillMaxWidth()) {
                     InputHardwarePill(
                         deviceName = selectedDevice?.name ?: "Detect Mic",
@@ -92,6 +86,16 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
+    // Interrupted take recovery prompt
+    interruptedSession?.let { session ->
+        RecoveryPromptDialog(
+            session = session,
+            onResume = { viewModel.resumeInterruptedSession() },
+            onSave = { viewModel.finalizeInterruptedSession() },
+            onDiscard = { viewModel.discardInterruptedSession() }
+        )
+    }
+
     if (showDeviceDialog) {
         DeviceSelectionDialog(
             devices = devices,
@@ -103,6 +107,50 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             onDismiss = { showDeviceDialog = false }
         )
     }
+}
+
+@Composable
+private fun RecoveryPromptDialog(
+    session: InterruptedSession,
+    onResume: () -> Unit,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Interrupted Take Found") },
+        text = {
+            Column {
+                Text("An earlier session was unexpectedly terminated.")
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "Duration: ~${session.durationSeconds}s (${session.bytesWritten / 1024} KB)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Would you like to resume recording from the end of this take, save it, or discard it?")
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onResume,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Resume Recording")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDiscard) {
+                    Text("Discard", color = Color(0xFFE53935))
+                }
+                TextButton(onClick = onSave) {
+                    Text("Save Take")
+                }
+            }
+        }
+    )
 }
 
 @Composable
