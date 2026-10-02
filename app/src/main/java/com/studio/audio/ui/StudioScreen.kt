@@ -28,7 +28,7 @@ fun StudioScreen() {
         ) {
             // 1. Teleprompter Container
             SectionPlaceholder(
-                title = "1. Teleprompter (Collapsible / Mirror)",
+                title = "1. Teleprompter Screen (Collapsible / Mirror)",
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.8f)
