@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,7 +19,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studio.audio.core.audio.AudioInputDevice
+import com.studio.audio.core.audio.AudioPreset
 import com.studio.audio.core.audio.InterruptedSession
+import com.studio.audio.ui.components.PresetSelectionDialog
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -29,12 +32,15 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     val destination by viewModel.currentDestination.collectAsState()
     val devices by viewModel.availableDevices.collectAsState()
     val selectedDevice by viewModel.selectedDevice.collectAsState()
+    val selectedPreset by viewModel.selectedPreset.collectAsState()
+    val customPreset by viewModel.customPreset.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val interruptedSession by viewModel.interruptedSession.collectAsState()
     val pendingSaveFile by viewModel.pendingSaveFile.collectAsState()
     val savedRecordings by viewModel.savedRecordings.collectAsState()
 
     var showDeviceDialog by remember { mutableStateOf(false) }
+    var showPresetDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -65,10 +71,12 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                     StudioContent(
                         isRecording = isRecording,
                         selectedDevice = selectedDevice,
+                        selectedPreset = selectedPreset,
                         onOpenDeviceSelector = {
                             viewModel.refreshDevices()
                             showDeviceDialog = true
-                        }
+                        },
+                        onOpenPresetSelector = { showPresetDialog = true }
                     )
                 }
                 AppDestination.LIBRARY -> {
@@ -81,26 +89,24 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
-    // 1. Save Take Name Dialog (Triggered after recording finishes)
-    pendingSaveFile?.let { file ->
-        SaveTakeDialog(
-            tempFile = file,
-            onSave = { name -> viewModel.confirmSaveTake(name) },
-            onDiscard = { viewModel.discardTake() }
+    // 1. Preset Selection & Custom Builder Dialog
+    if (showPresetDialog) {
+        PresetSelectionDialog(
+            currentPreset = selectedPreset,
+            customPreset = customPreset,
+            selectedDevice = selectedDevice,
+            onPresetSelected = {
+                viewModel.selectPreset(it)
+                showPresetDialog = false
+            },
+            onSaveCustomPreset = { sr, ch, bd, fmt ->
+                viewModel.updateCustomPreset(sr, ch, bd, fmt)
+            },
+            onDismiss = { showPresetDialog = false }
         )
     }
 
-    // 2. Interrupted Take Recovery Dialog
-    interruptedSession?.let { session ->
-        RecoveryPromptDialog(
-            session = session,
-            onResume = { viewModel.resumeInterruptedSession() },
-            onSave = { viewModel.finalizeInterruptedSession() },
-            onDiscard = { viewModel.discardInterruptedSession() }
-        )
-    }
-
-    // 3. Audio Input Device Selector Dialog
+    // 2. Audio Input Device Selector Dialog
     if (showDeviceDialog) {
         DeviceSelectionDialog(
             devices = devices,
@@ -112,13 +118,34 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             onDismiss = { showDeviceDialog = false }
         )
     }
+
+    // 3. Save Take Name Dialog
+    pendingSaveFile?.let { file ->
+        SaveTakeDialog(
+            tempFile = file,
+            onSave = { name -> viewModel.confirmSaveTake(name) },
+            onDiscard = { viewModel.discardTake() }
+        )
+    }
+
+    // 4. Interrupted Take Recovery Dialog
+    interruptedSession?.let { session ->
+        RecoveryPromptDialog(
+            session = session,
+            onResume = { viewModel.resumeInterruptedSession() },
+            onSave = { viewModel.finalizeInterruptedSession() },
+            onDiscard = { viewModel.discardInterruptedSession() }
+        )
+    }
 }
 
 @Composable
 private fun StudioContent(
     isRecording: Boolean,
     selectedDevice: AudioInputDevice?,
-    onOpenDeviceSelector: () -> Unit
+    selectedPreset: AudioPreset,
+    onOpenDeviceSelector: () -> Unit,
+    onOpenPresetSelector: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // 1. Teleprompter Container
@@ -131,13 +158,13 @@ private fun StudioContent(
 
         // 2. Waveform Visualizer
         SectionPlaceholder(
-            title = "2. Waveform Visualizer (32-bit Float dynamic peaks)",
+            title = "2. Waveform Visualizer",
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1.2f)
         )
 
-        // 3. Control & Metrics Strip
+        // 3. Control & Metrics Strip (Blueprint Row 1 Pills)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -147,20 +174,155 @@ private fun StudioContent(
                 .padding(12.dp)
         ) {
             Text(
-                text = if (isRecording) "RECORDING ACTIVE (32-bit Float @ 48kHz)" else "STANDBY",
+                text = if (isRecording) "RECORDING ACTIVE" else "STANDBY",
                 color = if (isRecording) Color(0xFFE53935) else Color.Gray,
                 style = MaterialTheme.typography.labelSmall
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Row(modifier = Modifier.fillMaxWidth()) {
+            // Row 1 Pills: Hardware Selector + Preset Selector Card
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 InputHardwarePill(
                     deviceName = selectedDevice?.name ?: "Detect Mic",
-                    onClick = onOpenDeviceSelector
+                    onClick = onOpenDeviceSelector,
+                    modifier = Modifier.weight(1f)
+                )
+
+                PresetPill(
+                    preset = selectedPreset,
+                    onClick = onOpenPresetSelector,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
     }
+}
+
+@Composable
+private fun PresetPill(
+    preset: AudioPreset,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.clickable { onClick() },
+        color = Color(0xFF2C2C2E),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A3A3C))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Tune,
+                contentDescription = null,
+                tint = Color(0xFF1E88E5),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Column {
+                Text(
+                    text = "🎛 ${preset.name}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1
+                )
+                Text(
+                    text = "${preset.sampleRate / 1000}k • ${preset.bitDepth}",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InputHardwarePill(
+    deviceName: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.clickable { onClick() },
+        color = Color(0xFF2C2C2E),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A3A3C))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Mic,
+                contentDescription = null,
+                tint = Color(0xFFE53935),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Column {
+                Text(
+                    text = "🎙 $deviceName",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1
+                )
+                Text(
+                    text = "Hardware Input",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceSelectionDialog(
+    devices: List<AudioInputDevice>,
+    currentDevice: AudioInputDevice?,
+    onDeviceSelected: (AudioInputDevice) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Available Audio Inputs") },
+        text = {
+            if (devices.isEmpty()) {
+                Text("No input devices detected.")
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    items(devices) { device ->
+                        val isSelected = device.id == currentDevice?.id
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onDeviceSelected(device) }
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "${device.name} (${device.typeLabel})",
+                                color = if (isSelected) Color(0xFF1E88E5) else Color.White,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                text = "Supported: ${device.sampleRates.joinToString { "${it}Hz" }}",
+                                color = Color.Gray,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
 
 @Composable
@@ -179,10 +341,7 @@ private fun SaveTakeDialog(
         title = { Text("Save Recording") },
         text = {
             Column {
-                Text(
-                    text = "Enter a name for this take:",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Text(text = "Enter a name for this take:", style = MaterialTheme.typography.bodyMedium)
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
                     value = titleText,
@@ -249,78 +408,6 @@ private fun RecoveryPromptDialog(
                     Text("Save Take")
                 }
             }
-        }
-    )
-}
-
-@Composable
-private fun InputHardwarePill(deviceName: String, onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.clickable { onClick() },
-        color = Color(0xFF2C2C2E),
-        shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A3A3C))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.Mic,
-                contentDescription = null,
-                tint = Color(0xFFE53935),
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = "🎙 $deviceName",
-                color = Color.White,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-    }
-}
-
-@Composable
-private fun DeviceSelectionDialog(
-    devices: List<AudioInputDevice>,
-    currentDevice: AudioInputDevice?,
-    onDeviceSelected: (AudioInputDevice) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Available Audio Inputs") },
-        text = {
-            if (devices.isEmpty()) {
-                Text("No input devices detected.")
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                    items(devices) { device ->
-                        val isSelected = device.id == currentDevice?.id
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onDeviceSelected(device) }
-                                .padding(vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = "${device.name} (${device.typeLabel})",
-                                color = if (isSelected) Color(0xFF1E88E5) else Color.White,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                text = "Supported: ${device.sampleRates.joinToString { "${it}Hz" }}",
-                                color = Color.Gray,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
 }

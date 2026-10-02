@@ -9,15 +9,16 @@ data class AudioInputDevice(
     val id: Int,
     val name: String,
     val typeLabel: String,
-    val sampleRates: List<Int>,
-    val rawDeviceInfo: AudioDeviceInfo? // null indicates the system-calibrated default mic array
+    val sampleRates: List<Int>,     // Empty list explicitly means unconstrained / arbitrary
+    val channelCounts: List<Int>,   // Empty list explicitly means unconstrained / arbitrary
+    val isUnconstrained: Boolean,   // True when HAL reports open/arbitrary rates
+    val rawDeviceInfo: AudioDeviceInfo?
 )
 
 class AudioDeviceRegistry(private val context: Context) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-    // Whitelist only actual user-recordable input hardware
     private val allowedRecordingTypes = setOf(
         AudioDeviceInfo.TYPE_BUILTIN_MIC,
         AudioDeviceInfo.TYPE_WIRED_HEADSET,
@@ -35,36 +36,40 @@ class AudioDeviceRegistry(private val context: Context) {
 
         val devices = mutableListOf<AudioInputDevice>()
 
-        // 1. Consolidate internal mic endpoints into a single clean "Built-in Microphone"
+        // 1. Built-in Microphone Consolidated Array
         val internalMics = allHardwareInputs.filter { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
         if (internalMics.isNotEmpty()) {
             val primaryMic = internalMics.first()
-            val reportedRates = primaryMic.sampleRates.toList()
-            val effectiveRates = if (reportedRates.isEmpty()) listOf(44100, 48000) else reportedRates
+            val rawRates = primaryMic.sampleRates.toList()
+            val rawChannels = primaryMic.channelCounts.toList()
 
             devices.add(
                 AudioInputDevice(
                     id = primaryMic.id,
                     name = "Built-in Microphone",
                     typeLabel = "Internal",
-                    sampleRates = effectiveRates,
-                    rawDeviceInfo = null // Passing null to AudioRecord engages the calibrated onboard array
+                    sampleRates = rawRates,
+                    channelCounts = rawChannels,
+                    isUnconstrained = rawRates.isEmpty(),
+                    rawDeviceInfo = null
                 )
             )
         }
 
-        // 2. Add connected external peripherals (USB interfaces, Bluetooth headsets, Wired mics)
+        // 2. External Peripherals (USB, Bluetooth, etc.)
         val externalInputs = allHardwareInputs.filter { it.type != AudioDeviceInfo.TYPE_BUILTIN_MIC }
         for (device in externalInputs) {
-            val reportedRates = device.sampleRates.toList()
-            val effectiveRates = if (reportedRates.isEmpty()) listOf(44100, 48000) else reportedRates
+            val rawRates = device.sampleRates.toList()
+            val rawChannels = device.channelCounts.toList()
 
             devices.add(
                 AudioInputDevice(
                     id = device.id,
                     name = resolveFriendlyName(device),
                     typeLabel = mapDeviceTypeToString(device.type),
-                    sampleRates = effectiveRates,
+                    sampleRates = rawRates,
+                    channelCounts = rawChannels,
+                    isUnconstrained = rawRates.isEmpty(),
                     rawDeviceInfo = device
                 )
             )

@@ -33,13 +33,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _selectedDevice = MutableStateFlow<AudioInputDevice?>(null)
     val selectedDevice: StateFlow<AudioInputDevice?> = _selectedDevice.asStateFlow()
 
+    // Preset Selection State (Decoupled from recording engine for now)
+    private val _selectedPreset = MutableStateFlow<AudioPreset>(AudioPresetValidator.POPULAR_PRESETS.first())
+    val selectedPreset: StateFlow<AudioPreset> = _selectedPreset.asStateFlow()
+
+    private val _customPreset = MutableStateFlow(
+        AudioPreset(
+            id = "preset_custom",
+            name = "Custom Preset",
+            description = "User-configured audio attributes",
+            sampleRate = 48000,
+            channelCount = 2,
+            bitDepth = "24-bit",
+            format = AudioEncodingFormat.PCM_24BIT,
+            isCustom = true
+        )
+    )
+    val customPreset: StateFlow<AudioPreset> = _customPreset.asStateFlow()
+
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
     private val _interruptedSession = MutableStateFlow<InterruptedSession?>(null)
     val interruptedSession: StateFlow<InterruptedSession?> = _interruptedSession.asStateFlow()
 
-    // Save Name Dialog State
     private val _pendingSaveFile = MutableStateFlow<File?>(null)
     val pendingSaveFile: StateFlow<File?> = _pendingSaveFile.asStateFlow()
 
@@ -52,6 +69,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         refreshDevices()
         refreshLibrary()
         checkForInterruptedSession()
+    }
+
+    fun selectPreset(preset: AudioPreset) {
+        _selectedPreset.value = preset
+    }
+
+    fun updateCustomPreset(
+        sampleRate: Int,
+        channelCount: Int,
+        bitDepth: String,
+        format: AudioEncodingFormat
+    ) {
+        val updated = _customPreset.value.copy(
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            bitDepth = bitDepth,
+            format = format
+        )
+        _customPreset.value = updated
+        _selectedPreset.value = updated
+    }
+
+    fun validatePreset(preset: AudioPreset): CompatibilityResult {
+        return AudioPresetValidator.validate(preset, _selectedDevice.value)
     }
 
     fun navigateTo(destination: AppDestination) {
