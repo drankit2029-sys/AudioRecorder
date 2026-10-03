@@ -1,10 +1,13 @@
 package com.studio.audio.ui
 
 import android.app.Application
+import android.content.Intent
 import android.media.AudioDeviceInfo
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.studio.audio.core.audio.*
+import com.studio.audio.service.AudioRecordingService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,6 +28,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val captureEngine = AudioCaptureEngine(diskWriter)
     private val recoveryManager = SessionRecoveryManager(application)
     private val playerManager = LibraryPlayerManager()
+
+    private var recordingServiceIntent: Intent? = null
 
     private val _currentDestination = MutableStateFlow(AppDestination.STUDIO)
     val currentDestination: StateFlow<AppDestination> = _currentDestination.asStateFlow()
@@ -102,9 +107,29 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        stopRecordingService()
         routingManager.stopMonitoring()
         playerManager.release()
         timerJob?.cancel()
+    }
+
+    private fun startRecordingService() {
+        val context = getApplication<Application>()
+        val intent = Intent(context, AudioRecordingService::class.java)
+        recordingServiceIntent = intent
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    private fun stopRecordingService() {
+        val context = getApplication<Application>()
+        recordingServiceIntent?.let {
+            context.stopService(it)
+        }
+        recordingServiceIntent = null
     }
 
     fun playRecording(recording: SavedRecording, startPositionMs: Long = 0L) {
@@ -126,6 +151,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun handleActiveDeviceDisconnected(device: AudioDeviceInfo) {
         if (_isRecording.value) {
+            stopRecordingService()
             timerJob?.cancel()
             val stoppedFile = captureEngine.stopRecording()
             routingManager.teardownRouting()
@@ -229,6 +255,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopAndSaveRecording() {
         if (!_isRecording.value) return
+        stopRecordingService()
         timerJob?.cancel()
         timerJob = null
 
@@ -309,6 +336,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
+            // Start Foreground Service before opening the AudioRecord hardware stream
+            startRecordingService()
+
             activeRecordingFile = destination
             recoveryManager.markSessionActive(destination, preset.sampleRate, preset.channelCount)
 
@@ -323,6 +353,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     _currentDbfs.value = level
                 },
                 onError = { err ->
+                    stopRecordingService()
                     timerJob?.cancel()
                     val stoppedFile = captureEngine.stopRecording()
                     routingManager.teardownRouting()
