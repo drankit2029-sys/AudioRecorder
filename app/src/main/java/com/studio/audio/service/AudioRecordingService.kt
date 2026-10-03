@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.studio.audio.MainActivity
 
 class AudioRecordingService : Service() {
@@ -30,7 +31,6 @@ class AudioRecordingService : Service() {
         super.onCreate()
         createNotificationChannel()
         acquireWakeLock()
-        startForegroundRecording()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -41,15 +41,21 @@ class AudioRecordingService : Service() {
     private fun startForegroundRecording() {
         try {
             val notification = buildRecordingNotification()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                )
+            
+            // Resolve the required Foreground Service Type for Android 11+
+            val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
-                startForeground(NOTIFICATION_ID, notification)
+                0
             }
+
+            // Use the official AndroidX ServiceCompat to safely post the notification
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                foregroundServiceType
+            )
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -63,7 +69,7 @@ class AudioRecordingService : Service() {
                 "StudioAudio:RecordingWakeLock"
             ).apply {
                 setReferenceCounted(false)
-                acquire(4 * 60 * 60 * 1000L)
+                acquire(4 * 60 * 60 * 1000L) // 4-hour safety ceiling
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -83,24 +89,26 @@ class AudioRecordingService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Studio Recording Active")
-            .setContentText("Capturing audio in 32-bit float...")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Standard non-adaptive icon
+            .setContentText("Capturing hardware audio in 32-bit float...")
+            // Safest standard Android system icon
+            .setSmallIcon(android.R.drawable.ic_menu_mic) 
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
+                // CRITICAL: Name changed to _v2 to break the OS cache of the old hidden channel
                 val channel = NotificationChannel(
                     CHANNEL_ID,
-                    "Studio Recording Active",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    "Active Recording (Foreground)",
+                    NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Ongoing recording notification to prevent background termination"
+                    description = "Keeps the microphone active in the background"
                     setSound(null, null)
                     enableVibration(false)
                     lockscreenVisibility = Notification.VISIBILITY_PUBLIC
@@ -122,12 +130,13 @@ class AudioRecordingService : Service() {
             e.printStackTrace()
         }
         wakeLock = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
     companion object {
-        private const val NOTIFICATION_ID = 1001
-        private const val CHANNEL_ID = "studio_recording_channel"
+        // Changed IDs to force Android to render a fresh, highly-visible notification
+        private const val NOTIFICATION_ID = 1002
+        private const val CHANNEL_ID = "studio_recording_channel_v2" 
     }
 }
