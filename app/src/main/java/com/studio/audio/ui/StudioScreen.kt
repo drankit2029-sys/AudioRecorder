@@ -40,6 +40,10 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     val pendingSaveFile by viewModel.pendingSaveFile.collectAsState()
     val savedRecordings by viewModel.savedRecordings.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val isPlayingAudio by viewModel.isPlayingAudio.collectAsState()
+    val currentPlayingFile by viewModel.currentPlayingFile.collectAsState()
+    val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
+    val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
 
     var showDeviceDialog by remember { mutableStateOf(false) }
     var showPresetDialog by remember { mutableStateOf(false) }
@@ -68,6 +72,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 .statusBarsPadding()
                 .padding(innerPadding)
         ) {
+            
             when (destination) {
                 AppDestination.STUDIO -> {
                     StudioContent(
@@ -84,7 +89,14 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 AppDestination.LIBRARY -> {
                     LibraryScreen(
                         recordings = savedRecordings,
-                        onDelete = { viewModel.deleteRecording(it) }
+                        currentPlayingFile = currentPlayingFile,
+                        isPlaying = isPlayingAudio,
+                        playbackPositionMs = playbackPositionMs,
+                        playbackDurationMs = playbackDurationMs,
+                        onPlay = { recording -> viewModel.playRecording(recording) },
+                        onPause = { viewModel.pausePlayback() },
+                        onSeek = { targetMs -> viewModel.seekPlayback(targetMs) },
+                        onDelete = { recording -> viewModel.deleteRecording(recording) }
                     )
                 }
             }

@@ -20,6 +20,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val diskWriter = AudioDiskWriter()
     private val captureEngine = AudioCaptureEngine(diskWriter)
     private val recoveryManager = SessionRecoveryManager(application)
+    private val playerManager = LibraryPlayerManager()
 
     private val _currentDestination = MutableStateFlow(AppDestination.STUDIO)
     val currentDestination: StateFlow<AppDestination> = _currentDestination.asStateFlow()
@@ -62,6 +63,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    // Library Player Observable States
+    val isPlayingAudio: StateFlow<Boolean> = playerManager.isPlaying
+    val currentPlayingFile: StateFlow<File?> = playerManager.currentPlayingFile
+    val playbackPositionMs: StateFlow<Long> = playerManager.currentPositionMs
+    val playbackDurationMs: StateFlow<Long> = playerManager.totalDurationMs
+
     private var activeRecordingFile: File? = null
 
     private val routingManager = AudioRoutingManager(
@@ -80,6 +87,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         routingManager.stopMonitoring()
+        playerManager.release()
+    }
+
+    // Media Player Control Methods
+    fun playRecording(recording: SavedRecording, startPositionMs: Long = 0L) {
+        if (_isRecording.value) return
+        playerManager.play(viewModelScope, recording.file, startPositionMs)
+    }
+
+    fun pausePlayback() {
+        playerManager.pause()
+    }
+
+    fun seekPlayback(positionMs: Long) {
+        playerManager.seekTo(viewModelScope, positionMs)
+    }
+
+    fun stopPlayback() {
+        playerManager.stop()
     }
 
     private fun handleActiveDeviceDisconnected(device: AudioDeviceInfo) {
@@ -91,10 +117,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
             if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
                 _pendingSaveFile.value = stoppedFile
-                _errorMessage.value = "Microphone '${device.productName}' disconnected. Audio was saved and ready to rename."
+                _errorMessage.value = "Microphone '${device.productName}' disconnected. Audio saved and ready to rename."
             } else {
                 recoveryManager.markSessionCompleted()
-                _errorMessage.value = "Microphone '${device.productName}' disconnected before any audio could be captured."
+                _errorMessage.value = "Microphone '${device.productName}' disconnected before audio could be captured."
             }
         }
         refreshDevices()
@@ -128,6 +154,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _currentDestination.value = destination
         if (destination == AppDestination.LIBRARY) {
             refreshLibrary()
+        } else {
+            playerManager.pause()
         }
     }
 
@@ -136,6 +164,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun deleteRecording(recording: SavedRecording) {
+        if (playerManager.currentPlayingFile.value?.absolutePath == recording.file.absolutePath) {
+            playerManager.stop()
+        }
         recoveryManager.deleteRecording(recording.file)
         refreshLibrary()
     }
@@ -176,6 +207,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 _errorMessage.value = "Recording stopped, but no audio samples were captured."
             }
         } else {
+            playerManager.stop()
             startSession(destination = recoveryManager.createNewTakeFile(), append = false)
         }
     }
@@ -200,6 +232,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun resumeInterruptedSession() {
         val session = _interruptedSession.value ?: return
         _interruptedSession.value = null
+        playerManager.stop()
         startSession(destination = session.audioFile, append = true)
     }
 
