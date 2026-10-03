@@ -6,9 +6,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.studio.audio.core.audio.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -52,13 +55,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
+    private val _isPaused = MutableStateFlow(false)
+    val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
+
+    private val _recordingTimeMs = MutableStateFlow(0L)
+    val recordingTimeMs: StateFlow<Long> = _recordingTimeMs.asStateFlow()
+
+    private val _currentDbfs = MutableStateFlow(-60f)
+    val currentDbfs: StateFlow<Float> = _currentDbfs.asStateFlow()
+
     private val _interruptedSession = MutableStateFlow<InterruptedSession?>(null)
     val interruptedSession: StateFlow<InterruptedSession?> = _interruptedSession.asStateFlow()
 
     private val _pendingSaveFile = MutableStateFlow<File?>(null)
     val pendingSaveFile: StateFlow<File?> = _pendingSaveFile.asStateFlow()
 
-    // Non-null while file conversion is actively running
     private val _conversionProgress = MutableStateFlow<Float?>(null)
     val conversionProgress: StateFlow<Float?> = _conversionProgress.asStateFlow()
 
@@ -74,6 +85,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     val playbackDurationMs: StateFlow<Long> = playerManager.totalDurationMs
 
     private var activeRecordingFile: File? = null
+    private var timerJob: Job? = null
 
     private val routingManager = AudioRoutingManager(
         context = application,
@@ -92,6 +104,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         super.onCleared()
         routingManager.stopMonitoring()
         playerManager.release()
+        timerJob?.cancel()
     }
 
     fun playRecording(recording: SavedRecording, startPositionMs: Long = 0L) {
@@ -113,9 +126,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun handleActiveDeviceDisconnected(device: AudioDeviceInfo) {
         if (_isRecording.value) {
+            timerJob?.cancel()
             val stoppedFile = captureEngine.stopRecording()
             routingManager.teardownRouting()
             _isRecording.value = false
+            _isPaused.value = false
+            _currentDbfs.value = -60f
             activeRecordingFile = null
 
             if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
@@ -193,22 +209,41 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _selectedDevice.value = device
     }
 
-    fun toggleRecording() {
-        if (_isRecording.value) {
-            val stoppedFile = captureEngine.stopRecording()
-            routingManager.teardownRouting()
-            _isRecording.value = false
-            activeRecordingFile = null
+    fun startRecordingTake() {
+        if (_isRecording.value) return
+        playerManager.stop()
+        startSession(destination = recoveryManager.createNewTakeFile(), append = false)
+    }
 
-            if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
-                _pendingSaveFile.value = stoppedFile
-            } else {
-                recoveryManager.markSessionCompleted()
-                _errorMessage.value = "Recording stopped, but no audio samples were captured."
-            }
+    fun togglePauseResume() {
+        if (!_isRecording.value) return
+        if (_isPaused.value) {
+            captureEngine.resume()
+            _isPaused.value = false
         } else {
-            playerManager.stop()
-            startSession(destination = recoveryManager.createNewTakeFile(), append = false)
+            captureEngine.pause()
+            _isPaused.value = true
+            _currentDbfs.value = -60f
+        }
+    }
+
+    fun stopAndSaveRecording() {
+        if (!_isRecording.value) return
+        timerJob?.cancel()
+        timerJob = null
+
+        val stoppedFile = captureEngine.stopRecording()
+        routingManager.teardownRouting()
+        _isRecording.value = false
+        _isPaused.value = false
+        _currentDbfs.value = -60f
+        activeRecordingFile = null
+
+        if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
+            _pendingSaveFile.value = stoppedFile
+        } else {
+            recoveryManager.markSessionCompleted()
+            _errorMessage.value = "Recording stopped, but no audio samples were captured."
         }
     }
 
@@ -284,10 +319,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 channelCount = preset.channelCount,
                 destinationFile = destination,
                 append = append,
+                onDbfsUpdate = { level ->
+                    _currentDbfs.value = level
+                },
                 onError = { err ->
+                    timerJob?.cancel()
                     val stoppedFile = captureEngine.stopRecording()
                     routingManager.teardownRouting()
                     _isRecording.value = false
+                    _isPaused.value = false
+                    _currentDbfs.value = -60f
                     activeRecordingFile = null
 
                     if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
@@ -304,7 +345,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     _errorMessage.value = msg
                 }
             )
+
             _isRecording.value = true
+            _isPaused.value = false
+            _recordingTimeMs.value = 0L
+
+            timerJob?.cancel()
+            timerJob = viewModelScope.launch {
+                while (_isRecording.value && isActive) {
+                    delay(100L)
+                    if (!_isPaused.value) {
+                        _recordingTimeMs.value += 100L
+                    }
+                }
+            }
         }
     }
 }

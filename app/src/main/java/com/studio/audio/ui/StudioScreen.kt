@@ -1,13 +1,18 @@
 package com.studio.audio.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
@@ -15,8 +20,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studio.audio.core.audio.AudioInputDevice
 import com.studio.audio.core.audio.AudioPreset
@@ -36,6 +46,10 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     val selectedPreset by viewModel.selectedPreset.collectAsState()
     val customPreset by viewModel.customPreset.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
+    val isPaused by viewModel.isPaused.collectAsState()
+    val recordingTimeMs by viewModel.recordingTimeMs.collectAsState()
+    val currentDbfs by viewModel.currentDbfs.collectAsState()
+
     val interruptedSession by viewModel.interruptedSession.collectAsState()
     val pendingSaveFile by viewModel.pendingSaveFile.collectAsState()
     val conversionProgress by viewModel.conversionProgress.collectAsState()
@@ -57,14 +71,17 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             PersistentDock(
                 currentDestination = destination,
                 isRecording = isRecording,
+                isPaused = isPaused,
                 onLibraryClick = { viewModel.navigateTo(AppDestination.LIBRARY) },
                 onStudioClick = { viewModel.navigateTo(AppDestination.STUDIO) },
-                onFabClick = {
+                onRecordClick = {
                     if (destination != AppDestination.STUDIO) {
                         viewModel.navigateTo(AppDestination.STUDIO)
                     }
-                    viewModel.toggleRecording()
-                }
+                    viewModel.startRecordingTake()
+                },
+                onPauseResumeClick = { viewModel.togglePauseResume() },
+                onSaveClick = { viewModel.stopAndSaveRecording() }
             )
         }
     ) { innerPadding ->
@@ -78,6 +95,9 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 AppDestination.STUDIO -> {
                     StudioContent(
                         isRecording = isRecording,
+                        isPaused = isPaused,
+                        recordingTimeMs = recordingTimeMs,
+                        currentDbfs = currentDbfs,
                         selectedDevice = selectedDevice,
                         selectedPreset = selectedPreset,
                         onOpenDeviceSelector = {
@@ -110,12 +130,10 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
-    // 1. Conversion Progress Modal
     conversionProgress?.let { progress ->
         ConversionProgressDialog(progress = progress)
     }
 
-    // 2. Hardware Error Alert
     errorMessage?.let { errorText ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissError() },
@@ -129,7 +147,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 3. Preset Selection Dialog
     if (showPresetDialog && !isRecording) {
         PresetSelectionDialog(
             currentPreset = selectedPreset,
@@ -146,7 +163,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 4. Device Selector Dialog
     if (showDeviceDialog && !isRecording) {
         DeviceSelectionDialog(
             devices = devices,
@@ -159,7 +175,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 5. Save Take Dialog
     pendingSaveFile?.let { file ->
         SaveTakeDialog(
             tempFile = file,
@@ -168,7 +183,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 6. Interrupted Take Recovery Dialog
     interruptedSession?.let { session ->
         RecoveryPromptDialog(
             session = session,
@@ -182,42 +196,74 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
 @Composable
 private fun StudioContent(
     isRecording: Boolean,
+    isPaused: Boolean,
+    recordingTimeMs: Long,
+    currentDbfs: Float,
     selectedDevice: AudioInputDevice?,
     selectedPreset: AudioPreset,
     onOpenDeviceSelector: () -> Unit,
     onOpenPresetSelector: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        // 1. Teleprompter Container Placeholder[cite: 1]
         SectionPlaceholder(
             title = "1. Teleprompter Container (Collapsible / Mirror)",
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.8f)
+                .weight(0.7f)
         )
 
-        SectionPlaceholder(
-            title = "2. Waveform Visualizer",
+        // 2. Waveform Visualizer & Timer Area[cite: 1]
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1.2f)
-        )
+                .weight(1.3f)
+                .padding(4.dp)
+                .background(Color(0xFF141416), RoundedCornerShape(12.dp))
+                .border(1.dp, Color(0xFF262628), RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                StudioTimer(
+                    durationMs = recordingTimeMs,
+                    isRecording = isRecording,
+                    isPaused = isPaused
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = if (isRecording) {
+                        if (isPaused) "PAUSED" else "32-BIT FLOAT STREAMING"
+                    } else "READY TO CAPTURE",
+                    color = if (isRecording) {
+                        if (isPaused) Color(0xFFFFA000) else Color(0xFF81D4FA)
+                    } else Color.Gray,
+                    letterSpacing = 1.sp,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
 
+        // 3. Control & Metrics Strip[cite: 1]
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.8f)
+                .wrapContentHeight()
                 .padding(8.dp)
-                .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                .padding(12.dp)
+                .background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp))
+                .padding(14.dp)
         ) {
-            Text(
-                text = if (isRecording) "RECORDING ACTIVE" else "STANDBY",
-                color = if (isRecording) Color(0xFFE53935) else Color.Gray,
-                style = MaterialTheme.typography.labelSmall
+            DbfsMeter(
+                dbfs = currentDbfs,
+                isRecording = isRecording,
+                isPaused = isPaused
             )
-            Spacer(modifier = Modifier.height(10.dp))
 
-            // Hardware & Preset Selectors (Disabled during active recording)
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Row 1 Selectors (Locked during capture)[cite: 1]
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -241,50 +287,226 @@ private fun StudioContent(
 }
 
 @Composable
-private fun ConversionProgressDialog(progress: Float) {
-    AlertDialog(
-        onDismissRequest = {}, // Modal dialog: prevent dismissing during transcoding
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Sync,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Converting Audio...")
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Exporting take to target preset format...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.LightGray
-                )
-                Spacer(modifier = Modifier.height(16.dp))
+private fun StudioTimer(
+    durationMs: Long,
+    isRecording: Boolean,
+    isPaused: Boolean
+) {
+    val totalSeconds = durationMs / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    val tenths = (durationMs % 1000) / 100
 
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(8.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = Color(0xFF2C2C2E)
-                )
+    val timeFormatted = String.format(Locale.US, "%02d:%02d.%d", minutes, seconds, tenths)
 
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "${(progress * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.Gray,
-                    modifier = Modifier.align(Alignment.End)
-                )
-            }
-        },
-        confirmButton = {}
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val alphaAnim by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
     )
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .alpha(if (isRecording && !isPaused) alphaAnim else 1f)
+                .background(
+                    color = when {
+                        !isRecording -> Color(0xFF424242)
+                        isPaused -> Color(0xFFFFA000)
+                        else -> Color(0xFFE53935)
+                    },
+                    shape = CircleShape
+                )
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Text(
+            text = timeFormatted,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 36.sp,
+            color = if (isRecording) Color.White else Color(0xFF757575)
+        )
+    }
+}
+
+@Composable
+private fun DbfsMeter(
+    dbfs: Float,
+    isRecording: Boolean,
+    isPaused: Boolean
+) {
+    val normalizedFraction = if (isRecording && !isPaused) {
+        ((dbfs - (-60f)) / (0f - (-60f))).coerceIn(0f, 1f)
+    } else 0f
+
+    val animatedFraction by animateFloatAsState(
+        targetValue = normalizedFraction,
+        animationSpec = spring(stiffness = Spring.StiffnessHigh),
+        label = "meterSmooth"
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "dBFS METER",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray,
+                letterSpacing = 0.8.sp
+            )
+            Text(
+                text = if (isRecording && !isPaused) String.format(Locale.US, "%.1f dBFS", dbfs) else "-∞ dBFS",
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (dbfs > -3f && isRecording && !isPaused) Color(0xFFFF5252) else Color(0xFF81D4FA)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Multi-zone meter bar (-60dB to 0dB)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(12.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF141416))
+                .border(1.dp, Color(0xFF2C2C2E), RoundedCornerShape(6.dp))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(animatedFraction)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                Color(0xFF2E7D32), // Green (-60 to -18)
+                                Color(0xFFFBC02D), // Yellow (-18 to -3)
+                                Color(0xFFE53935)  // Red (-3 to 0)
+                            )
+                        )
+                    )
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Scale Markings
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            listOf("-60", "-36", "-24", "-12", "-6", "0").forEach { mark ->
+                Text(
+                    text = mark,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color(0xFF5A5A5C)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PersistentDock(
+    currentDestination: AppDestination,
+    isRecording: Boolean,
+    isPaused: Boolean,
+    onLibraryClick: () -> Unit,
+    onStudioClick: () -> Unit,
+    onRecordClick: () -> Unit,
+    onPauseResumeClick: () -> Unit,
+    onSaveClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
+        color = Color(0xFF161616),
+        tonalElevation = 8.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onLibraryClick) {
+                Text(
+                    text = "Library",
+                    color = if (currentDestination == AppDestination.LIBRARY) Color(0xFF1E88E5) else Color.White
+                )
+            }
+
+            // Split Action Controller
+            if (!isRecording) {
+                // Idle state: Single Record FAB
+                FloatingActionButton(
+                    onClick = onRecordClick,
+                    containerColor = Color(0xFFE53935),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Record"
+                    )
+                }
+            } else {
+                // Active state: Split Pause & Save Buttons
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    // 1. Pause / Resume (Play) Button
+                    FloatingActionButton(
+                        onClick = onPauseResumeClick,
+                        containerColor = if (isPaused) Color(0xFF1E88E5) else Color(0xFFFFA000),
+                        contentColor = Color.White,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(50.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = if (isPaused) "Resume Recording" else "Pause Recording",
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    // 2. Commit / Save Button
+                    FloatingActionButton(
+                        onClick = onSaveClick,
+                        containerColor = Color(0xFF43A047),
+                        contentColor = Color.White,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(50.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Save Take",
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
+
+            TextButton(onClick = onStudioClick) {
+                Text(
+                    text = "Studio",
+                    color = if (currentDestination == AppDestination.STUDIO) Color(0xFF1E88E5) else Color.White
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -378,6 +600,53 @@ private fun InputHardwarePill(
 }
 
 @Composable
+private fun ConversionProgressDialog(progress: Float) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Sync,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Converting Audio...")
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Exporting take to target preset format...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = Color(0xFF2C2C2E)
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray,
+                    modifier = Modifier.align(Alignment.End)
+                )
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
 private fun SaveTakeDialog(
     tempFile: File,
     onSave: (String) -> Unit,
@@ -462,57 +731,6 @@ private fun RecoveryPromptDialog(
             }
         }
     )
-}
-
-@Composable
-fun PersistentDock(
-    currentDestination: AppDestination,
-    isRecording: Boolean,
-    onLibraryClick: () -> Unit,
-    onStudioClick: () -> Unit,
-    onFabClick: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding(),
-        color = Color(0xFF161616),
-        tonalElevation = 8.dp
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = onLibraryClick) {
-                Text(
-                    text = "Library",
-                    color = if (currentDestination == AppDestination.LIBRARY) Color(0xFF1E88E5) else Color.White
-                )
-            }
-
-            FloatingActionButton(
-                onClick = onFabClick,
-                containerColor = if (isRecording) Color(0xFFE53935) else MaterialTheme.colorScheme.primary,
-                contentColor = Color.White,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Icon(
-                    imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                    contentDescription = if (isRecording) "Stop" else "Record"
-                )
-            }
-
-            TextButton(onClick = onStudioClick) {
-                Text(
-                    text = "Studio",
-                    color = if (currentDestination == AppDestination.STUDIO) Color(0xFF1E88E5) else Color.White
-                )
-            }
-        }
-    }
 }
 
 @Composable

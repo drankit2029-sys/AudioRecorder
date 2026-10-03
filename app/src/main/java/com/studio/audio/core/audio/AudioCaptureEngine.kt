@@ -23,9 +23,20 @@ class AudioCaptureEngine(
     private var audioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
     private val isRecording = AtomicBoolean(false)
+    private val isPaused = AtomicBoolean(false)
 
     var currentDevice: AudioDeviceInfo? = null
         private set
+
+    fun pause() {
+        isPaused.set(true)
+    }
+
+    fun resume() {
+        isPaused.set(false)
+    }
+
+    fun isPausedState(): Boolean = isPaused.get()
 
     @SuppressLint("MissingPermission")
     fun startRecording(
@@ -35,6 +46,7 @@ class AudioCaptureEngine(
         channelCount: Int,
         destinationFile: File,
         append: Boolean = false,
+        onDbfsUpdate: (Float) -> Unit,
         onError: (RecordingError) -> Unit
     ) {
         if (isRecording.get()) return
@@ -43,9 +55,7 @@ class AudioCaptureEngine(
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
         } ?: false
 
-        // Bluetooth hardware is physically Mono
         val effectiveChannels = if (isBluetooth) 1 else channelCount
-
         val initResult = buildResilientAudioRecord(targetDevice, isBluetooth, sampleRate, effectiveChannels)
         if (initResult == null) {
             onError(RecordingError.InitializationFailed("Microphone initialization failed: HAL rejected $sampleRate Hz track"))
@@ -58,6 +68,7 @@ class AudioCaptureEngine(
         currentDevice = targetDevice
         diskWriter.start(destinationFile, append = append)
         isRecording.set(true)
+        isPaused.set(false)
 
         try {
             record.startRecording()
@@ -71,7 +82,6 @@ class AudioCaptureEngine(
 
         recordingJob = scope.launch(Dispatchers.IO) {
             if (hardwareEncoding == AudioFormat.ENCODING_PCM_FLOAT && hardwareRate == sampleRate) {
-                // Direct Float capture matching target rate & channel count
                 val byteBuffer = ByteBuffer.allocateDirect(bufferSizeBytes).order(ByteOrder.LITTLE_ENDIAN)
                 val byteArray = ByteArray(bufferSizeBytes)
 
@@ -80,16 +90,31 @@ class AudioCaptureEngine(
                     val bytesRead = record.read(byteBuffer, bufferSizeBytes, AudioRecord.READ_BLOCKING)
 
                     if (bytesRead > 0) {
-                        byteBuffer.position(0)
-                        byteBuffer.get(byteArray, 0, bytesRead)
-                        diskWriter.write(byteArray, 0, bytesRead)
+                        // Calculate real-time RMS dBFS
+                        var sumSquares = 0.0
+                        val floatCount = bytesRead / 4
+                        for (i in 0 until floatCount) {
+                            val sample = byteBuffer.getFloat(i * 4)
+                            sumSquares += (sample * sample)
+                        }
+                        val rms = Math.sqrt(sumSquares / floatCount.coerceAtLeast(1)).toFloat()
+                        val dbfs = (20.0 * Math.log10(rms.coerceAtLeast(0.00001f).toDouble()))
+                            .toFloat()
+                            .coerceIn(-60f, 0f)
+
+                        onDbfsUpdate(if (isPaused.get()) -60f else dbfs)
+
+                        if (!isPaused.get()) {
+                            byteBuffer.position(0)
+                            byteBuffer.get(byteArray, 0, bytesRead)
+                            diskWriter.write(byteArray, 0, bytesRead)
+                        }
                     } else if (bytesRead < 0) {
                         handleError(bytesRead, onError)
                         break
                     }
                 }
             } else {
-                // 16-bit PCM capture -> Convert to 32-bit Float in memory
                 val upsampleFactor = (sampleRate / hardwareRate).coerceAtLeast(1)
                 val shortBuffer = ShortArray(bufferSizeBytes / 2)
                 val outputFloatsCount = shortBuffer.size * upsampleFactor
@@ -101,24 +126,38 @@ class AudioCaptureEngine(
                     val shortsRead = record.read(shortBuffer, 0, shortBuffer.size, AudioRecord.READ_BLOCKING)
 
                     if (shortsRead > 0) {
-                        floatOutputBuffer.clear()
+                        var sumSquares = 0.0
                         for (i in 0 until shortsRead) {
-                            val currentSample = shortBuffer[i] / 32768.0f
-                            if (upsampleFactor > 1) {
-                                val delta = (currentSample - lastSample) / upsampleFactor.toFloat()
-                                for (step in 1..upsampleFactor) {
-                                    floatOutputBuffer.putFloat(lastSample + (delta * step))
-                                }
-                                lastSample = currentSample
-                            } else {
-                                floatOutputBuffer.putFloat(currentSample)
-                            }
+                            val sample = shortBuffer[i] / 32768.0f
+                            sumSquares += (sample * sample)
                         }
+                        val rms = Math.sqrt(sumSquares / shortsRead.coerceAtLeast(1)).toFloat()
+                        val dbfs = (20.0 * Math.log10(rms.coerceAtLeast(0.00001f).toDouble()))
+                            .toFloat()
+                            .coerceIn(-60f, 0f)
 
-                        val bytesToWrite = shortsRead * upsampleFactor * 4
-                        floatOutputBuffer.position(0)
-                        floatOutputBuffer.get(floatByteArray, 0, bytesToWrite)
-                        diskWriter.write(floatByteArray, 0, bytesToWrite)
+                        onDbfsUpdate(if (isPaused.get()) -60f else dbfs)
+
+                        if (!isPaused.get()) {
+                            floatOutputBuffer.clear()
+                            for (i in 0 until shortsRead) {
+                                val currentSample = shortBuffer[i] / 32768.0f
+                                if (upsampleFactor > 1) {
+                                    val delta = (currentSample - lastSample) / upsampleFactor.toFloat()
+                                    for (step in 1..upsampleFactor) {
+                                        floatOutputBuffer.putFloat(lastSample + (delta * step))
+                                    }
+                                    lastSample = currentSample
+                                } else {
+                                    floatOutputBuffer.putFloat(currentSample)
+                                }
+                            }
+
+                            val bytesToWrite = shortsRead * upsampleFactor * 4
+                            floatOutputBuffer.position(0)
+                            floatOutputBuffer.get(floatByteArray, 0, bytesToWrite)
+                            diskWriter.write(floatByteArray, 0, bytesToWrite)
+                        }
                     } else if (shortsRead < 0) {
                         handleError(shortsRead, onError)
                         break
@@ -145,7 +184,6 @@ class AudioCaptureEngine(
         val channelMask = if (channelCount == 2) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
 
         val configurations = if (isBluetooth) {
-            // If preset is already 8k or 16k, capture directly at that rate without interpolation
             listOf(
                 Triple(MediaRecorder.AudioSource.VOICE_COMMUNICATION, AudioFormat.ENCODING_PCM_16BIT, sampleRate),
                 Triple(MediaRecorder.AudioSource.VOICE_COMMUNICATION, AudioFormat.ENCODING_PCM_16BIT, 16000),
@@ -216,6 +254,7 @@ class AudioCaptureEngine(
     fun stopRecording(): File? {
         if (!isRecording.get()) return null
         isRecording.set(false)
+        isPaused.set(false)
         recordingJob?.cancel()
         recordingJob = null
 
