@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 class AudioRoutingManager(
@@ -54,7 +55,6 @@ class AudioRoutingManager(
                 }
                 AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
                     if (scoActive) {
-                        // Real disconnection while recording was active
                         scoActive = false
                         activeDevice?.let { dev ->
                             if (isBluetoothDevice(dev.type)) {
@@ -62,7 +62,6 @@ class AudioRoutingManager(
                             }
                         }
                     } else {
-                        // Failed negotiation or initial broadcast
                         scoConnectDeferred?.complete(false)
                     }
                 }
@@ -86,9 +85,6 @@ class AudioRoutingManager(
         teardownRouting()
     }
 
-    /**
-     * Activates routing and suspends until the hardware audio channel is verified.
-     */
     suspend fun activateRoute(device: AudioDeviceInfo?): Boolean {
         activeDevice = device
         if (device == null) {
@@ -97,7 +93,12 @@ class AudioRoutingManager(
         }
 
         if (isBluetoothDevice(device.type)) {
-            return activateBluetoothRoute(device)
+            val success = activateBluetoothRoute(device)
+            if (success) {
+                // Allow the hardware SCO clock to lock before opening the recording track
+                delay(300L)
+            }
+            return success
         } else {
             teardownRouting()
             return true
@@ -121,7 +122,6 @@ class AudioRoutingManager(
             audioManager.startBluetoothSco()
             audioManager.isBluetoothScoOn = true
 
-            // Wait up to 3000ms for hardware SCO synchronization
             val connected = withTimeoutOrNull(3000L) {
                 deferred.await()
             } ?: false
