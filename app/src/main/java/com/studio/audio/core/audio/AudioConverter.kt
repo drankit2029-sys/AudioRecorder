@@ -18,27 +18,26 @@ object AudioConverter {
         outputFile: File,
         sampleRate: Int,
         channelCount: Int,
-        preset: AudioPreset
+        preset: AudioPreset,
+        onProgress: ((Float) -> Unit)? = null
     ): Boolean {
         if (!inputFile.exists() || inputFile.length() == 0L) return false
 
         return when (preset.format) {
             AudioFormatType.WAV -> {
                 val targetBitDepth = preset.bitDepth ?: BitDepth.BIT_16
-                convertPcmFloatToWav(inputFile, outputFile, sampleRate, channelCount, targetBitDepth)
+                convertPcmFloatToWav(inputFile, outputFile, sampleRate, channelCount, targetBitDepth, onProgress)
             }
             AudioFormatType.AAC -> {
-                val success = encodeToAac(inputFile, outputFile, sampleRate, channelCount)
+                val success = encodeToAac(inputFile, outputFile, sampleRate, channelCount, onProgress)
                 if (!success) {
-                    // Safety fallback: if MediaCodec fails, preserve data as 16-bit WAV
                     val fallbackFile = File(outputFile.parentFile, "${outputFile.nameWithoutExtension}.wav")
-                    convertPcmFloatToWav(inputFile, fallbackFile, sampleRate, channelCount, BitDepth.BIT_16)
+                    convertPcmFloatToWav(inputFile, fallbackFile, sampleRate, channelCount, BitDepth.BIT_16, onProgress)
                 } else true
             }
             AudioFormatType.FLAC,
             AudioFormatType.OPUS -> {
-                // Lossless or speech presets default to standard PCM WAV if container encoder is unconfigured
-                convertPcmFloatToWav(inputFile, outputFile, sampleRate, channelCount, preset.bitDepth ?: BitDepth.BIT_16)
+                convertPcmFloatToWav(inputFile, outputFile, sampleRate, channelCount, preset.bitDepth ?: BitDepth.BIT_16, onProgress)
             }
         }
     }
@@ -48,25 +47,29 @@ object AudioConverter {
         outputFile: File,
         sampleRate: Int,
         channelCount: Int,
-        bitDepth: BitDepth
+        bitDepth: BitDepth,
+        onProgress: ((Float) -> Unit)? = null
     ): Boolean {
         val bitsPerSample = bitDepth.bitCount
-        val bytesPerOutputSample = bitsPerSample / 8
         val isFloat = bitDepth == BitDepth.FLOAT_32
+        val totalInputBytes = inputFile.length().coerceAtLeast(1L)
 
         val inputStream = FileInputStream(inputFile)
         val outputStream = FileOutputStream(outputFile)
 
-        // 1. Write placeholder 44-byte RIFF WAV Header
         writeWavHeader(outputStream, sampleRate, channelCount, bitsPerSample, isFloat, 0L)
 
-        val inputBuffer = ByteArray(4096 * 4) // 4096 floats = 16384 bytes
+        val inputBuffer = ByteArray(4096 * 4)
         val byteBuffer = ByteBuffer.allocate(inputBuffer.size).order(ByteOrder.LITTLE_ENDIAN)
         var totalPayloadBytesWritten = 0L
+        var totalBytesRead = 0L
 
         try {
             var bytesRead: Int
             while (inputStream.read(inputBuffer).also { bytesRead = it } != -1) {
+                totalBytesRead += bytesRead
+                onProgress?.invoke((totalBytesRead.toFloat() / totalInputBytes).coerceIn(0f, 1f))
+
                 byteBuffer.clear()
                 byteBuffer.put(inputBuffer, 0, bytesRead)
                 byteBuffer.flip()
@@ -74,7 +77,6 @@ object AudioConverter {
                 val floatCount = bytesRead / 4
                 when (bitDepth) {
                     BitDepth.FLOAT_32 -> {
-                        // Direct pass-through
                         outputStream.write(inputBuffer, 0, bytesRead)
                         totalPayloadBytesWritten += bytesRead
                     }
@@ -111,8 +113,8 @@ object AudioConverter {
             outputStream.close()
         }
 
-        // 2. Seek back and write finalized file sizes in the WAV header
         updateWavHeaderSizes(outputFile, totalPayloadBytesWritten)
+        onProgress?.invoke(1.0f)
         return true
     }
 
@@ -127,7 +129,7 @@ object AudioConverter {
         val totalDataLen = audioDataLength + 36
         val byteRate = sampleRate * channels * (bitsPerSample / 8)
         val blockAlign = channels * (bitsPerSample / 8)
-        val formatCode = if (isFloat) 3.toShort() else 1.toShort() // 3 = IEEE Float, 1 = PCM
+        val formatCode = if (isFloat) 3.toShort() else 1.toShort()
 
         val header = ByteArray(44)
         val bb = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
@@ -136,7 +138,7 @@ object AudioConverter {
         bb.putInt(totalDataLen.toInt())
         bb.put("WAVE".toByteArray())
         bb.put("fmt ".toByteArray())
-        bb.putInt(16) // Subchunk1Size for PCM/Float
+        bb.putInt(16)
         bb.putShort(formatCode)
         bb.putShort(channels.toShort())
         bb.putInt(sampleRate)
@@ -155,12 +157,10 @@ object AudioConverter {
             val totalDataLen = audioDataLength + 36
             val bb = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
 
-            // Update RIFF chunk size at offset 4
             raf.seek(4)
             bb.putInt(totalDataLen.toInt())
             raf.write(bb.array())
 
-            // Update data chunk size at offset 40
             bb.clear()
             raf.seek(40)
             bb.putInt(audioDataLength.toInt())
@@ -174,10 +174,12 @@ object AudioConverter {
         inputFile: File,
         outputFile: File,
         sampleRate: Int,
-        channels: Int
+        channels: Int,
+        onProgress: ((Float) -> Unit)? = null
     ): Boolean {
         var codec: MediaCodec? = null
         var muxer: MediaMuxer? = null
+        val totalInputBytes = inputFile.length().coerceAtLeast(1L)
         val inputStream = FileInputStream(inputFile)
 
         return try {
@@ -202,6 +204,8 @@ object AudioConverter {
             val byteBuffer = ByteBuffer.wrap(floatBytes).order(ByteOrder.LITTLE_ENDIAN)
 
             var isInputEof = false
+            var totalBytesRead = 0L
+
             while (!isInputEof || bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM == 0) {
                 if (!isInputEof) {
                     val inputBufferIndex = codec.dequeueInputBuffer(10000)
@@ -214,7 +218,9 @@ object AudioConverter {
                             codec.queueInputBuffer(inputBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             isInputEof = true
                         } else {
-                            // Downsample Float to 16-bit for AAC input
+                            totalBytesRead += read
+                            onProgress?.invoke((totalBytesRead.toFloat() / totalInputBytes).coerceIn(0f, 1f))
+
                             byteBuffer.position(0)
                             val floatsRead = read / 4
                             var pcmIdx = 0
@@ -247,6 +253,7 @@ object AudioConverter {
                     }
                 }
             }
+            onProgress?.invoke(1.0f)
             true
         } catch (e: Exception) {
             e.printStackTrace()

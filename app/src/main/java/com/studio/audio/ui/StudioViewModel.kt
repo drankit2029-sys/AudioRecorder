@@ -5,6 +5,7 @@ import android.media.AudioDeviceInfo
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.studio.audio.core.audio.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,6 +57,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _pendingSaveFile = MutableStateFlow<File?>(null)
     val pendingSaveFile: StateFlow<File?> = _pendingSaveFile.asStateFlow()
+
+    // Non-null while file conversion is actively running
+    private val _conversionProgress = MutableStateFlow<Float?>(null)
+    val conversionProgress: StateFlow<Float?> = _conversionProgress.asStateFlow()
 
     private val _savedRecordings = MutableStateFlow<List<SavedRecording>>(emptyList())
     val savedRecordings: StateFlow<List<SavedRecording>> = _savedRecordings.asStateFlow()
@@ -129,6 +134,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectPreset(preset: AudioPreset) {
+        if (_isRecording.value) return
         _selectedPreset.value = preset
     }
 
@@ -138,6 +144,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         bitDepth: BitDepth?,
         format: AudioFormatType
     ) {
+        if (_isRecording.value) return
         val updated = _customPreset.value.copy(
             sampleRate = sampleRate,
             channelCount = channelCount,
@@ -182,13 +189,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectDevice(device: AudioInputDevice) {
+        if (_isRecording.value) return
         _selectedDevice.value = device
-        if (_isRecording.value) {
-            viewModelScope.launch {
-                routingManager.activateRoute(device.rawDeviceInfo)
-                captureEngine.switchDevice(device.rawDeviceInfo)
-            }
-        }
     }
 
     fun toggleRecording() {
@@ -217,16 +219,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         val preset = _selectedPreset.value
 
-        // Transcode from 32-bit Float PCM to the preset format (e.g. 24-bit WAV, 16-bit WAV, AAC)
-        recoveryManager.commitRecording(
-            tempFile = file,
-            userTitle = finalTitle,
-            sampleRate = preset.sampleRate,
-            channelCount = preset.channelCount,
-            preset = preset
-        )
         _pendingSaveFile.value = null
-        refreshLibrary()
+        _conversionProgress.value = 0f
+
+        viewModelScope.launch(Dispatchers.IO) {
+            recoveryManager.commitRecording(
+                tempFile = file,
+                userTitle = finalTitle,
+                sampleRate = preset.sampleRate,
+                channelCount = preset.channelCount,
+                preset = preset,
+                onProgress = { progress ->
+                    _conversionProgress.value = progress
+                }
+            )
+            _conversionProgress.value = null
+            refreshLibrary()
+        }
     }
 
     fun discardTake() {

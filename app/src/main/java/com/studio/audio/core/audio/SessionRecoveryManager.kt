@@ -61,7 +61,8 @@ class SessionRecoveryManager(private val context: Context) {
         userTitle: String,
         sampleRate: Int,
         channelCount: Int,
-        preset: AudioPreset
+        preset: AudioPreset,
+        onProgress: ((Float) -> Unit)? = null
     ): File {
         markSessionCompleted()
 
@@ -77,18 +78,16 @@ class SessionRecoveryManager(private val context: Context) {
             counter++
         }
 
-        // Convert the 32-bit Float PCM to the preset format (WAV 16/24/32 float or AAC)
         val success = AudioConverter.convertPcmFloatToPreset(
             inputFile = tempFile,
             outputFile = destination,
             sampleRate = sampleRate,
             channelCount = channelCount,
-            preset = preset
+            preset = preset,
+            onProgress = onProgress
         )
 
-        // Delete temporary float file once converted
         tempFile.delete()
-
         return if (success) destination else tempFile
     }
 
@@ -131,7 +130,6 @@ class SessionRecoveryManager(private val context: Context) {
                 formatLabel = if (formatTag == 3) "32-bit Float WAV" else "$bitsPerSample-bit WAV"
             } catch (_: Exception) {}
         } else {
-            // General estimate based on file size
             durationSec = file.length() / (48000 * 2)
         }
 
@@ -165,7 +163,6 @@ class SessionRecoveryManager(private val context: Context) {
             val file = File(filePath)
 
             if (file.exists() && file.length() > 0) {
-                // Internal temp takes are ALWAYS 32-bit Float PCM = 4 bytes per sample per channel
                 val bytesPerSec = sampleRate * channelCount * 4L
                 val durationSec = if (bytesPerSec > 0) file.length() / bytesPerSec else 0L
 

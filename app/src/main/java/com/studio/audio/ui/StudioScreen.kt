@@ -4,25 +4,25 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studio.audio.core.audio.AudioInputDevice
 import com.studio.audio.core.audio.AudioPreset
 import com.studio.audio.core.audio.InterruptedSession
-import com.studio.audio.ui.components.PresetSelectionDialog
 import com.studio.audio.ui.components.DeviceSelectionDialog
+import com.studio.audio.ui.components.PresetSelectionDialog
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -38,8 +38,10 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     val isRecording by viewModel.isRecording.collectAsState()
     val interruptedSession by viewModel.interruptedSession.collectAsState()
     val pendingSaveFile by viewModel.pendingSaveFile.collectAsState()
+    val conversionProgress by viewModel.conversionProgress.collectAsState()
     val savedRecordings by viewModel.savedRecordings.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+
     val isPlayingAudio by viewModel.isPlayingAudio.collectAsState()
     val currentPlayingFile by viewModel.currentPlayingFile.collectAsState()
     val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
@@ -72,7 +74,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 .statusBarsPadding()
                 .padding(innerPadding)
         ) {
-            
             when (destination) {
                 AppDestination.STUDIO -> {
                     StudioContent(
@@ -80,10 +81,16 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                         selectedDevice = selectedDevice,
                         selectedPreset = selectedPreset,
                         onOpenDeviceSelector = {
-                            viewModel.refreshDevices()
-                            showDeviceDialog = true
+                            if (!isRecording) {
+                                viewModel.refreshDevices()
+                                showDeviceDialog = true
+                            }
                         },
-                        onOpenPresetSelector = { showPresetDialog = true }
+                        onOpenPresetSelector = {
+                            if (!isRecording) {
+                                showPresetDialog = true
+                            }
+                        }
                     )
                 }
                 AppDestination.LIBRARY -> {
@@ -103,6 +110,12 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
+    // 1. Conversion Progress Modal
+    conversionProgress?.let { progress ->
+        ConversionProgressDialog(progress = progress)
+    }
+
+    // 2. Hardware Error Alert
     errorMessage?.let { errorText ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissError() },
@@ -116,7 +129,8 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    if (showPresetDialog) {
+    // 3. Preset Selection Dialog
+    if (showPresetDialog && !isRecording) {
         PresetSelectionDialog(
             currentPreset = selectedPreset,
             customPreset = customPreset,
@@ -132,7 +146,8 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    if (showDeviceDialog) {
+    // 4. Device Selector Dialog
+    if (showDeviceDialog && !isRecording) {
         DeviceSelectionDialog(
             devices = devices,
             currentDevice = selectedDevice,
@@ -144,6 +159,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
+    // 5. Save Take Dialog
     pendingSaveFile?.let { file ->
         SaveTakeDialog(
             tempFile = file,
@@ -152,6 +168,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
+    // 6. Interrupted Take Recovery Dialog
     interruptedSession?.let { session ->
         RecoveryPromptDialog(
             session = session,
@@ -200,18 +217,21 @@ private fun StudioContent(
             )
             Spacer(modifier = Modifier.height(10.dp))
 
+            // Hardware & Preset Selectors (Disabled during active recording)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 InputHardwarePill(
                     deviceName = selectedDevice?.name ?: "Detect Mic",
+                    enabled = !isRecording,
                     onClick = onOpenDeviceSelector,
                     modifier = Modifier.weight(1f)
                 )
 
                 PresetPill(
                     preset = selectedPreset,
+                    enabled = !isRecording,
                     onClick = onOpenPresetSelector,
                     modifier = Modifier.weight(1f)
                 )
@@ -221,16 +241,68 @@ private fun StudioContent(
 }
 
 @Composable
+private fun ConversionProgressDialog(progress: Float) {
+    AlertDialog(
+        onDismissRequest = {}, // Modal dialog: prevent dismissing during transcoding
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Sync,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Converting Audio...")
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Exporting take to target preset format...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = Color(0xFF2C2C2E)
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray,
+                    modifier = Modifier.align(Alignment.End)
+                )
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
 private fun PresetPill(
     preset: AudioPreset,
+    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val alphaModifier = if (enabled) Modifier else Modifier.alpha(0.45f)
+
     Surface(
-        modifier = modifier.clickable { onClick() },
+        modifier = modifier
+            .then(alphaModifier)
+            .clickable(enabled = enabled) { onClick() },
         color = Color(0xFF2C2C2E),
         shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A3A3C))
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (enabled) Color(0xFF3A3A3C) else Color(0xFF222224))
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -239,20 +311,20 @@ private fun PresetPill(
             Icon(
                 imageVector = Icons.Default.Tune,
                 contentDescription = null,
-                tint = Color(0xFF1E88E5),
+                tint = if (enabled) Color(0xFF1E88E5) else Color.DarkGray,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Column {
                 Text(
                     text = "🎛 ${preset.name}",
-                    color = Color.White,
+                    color = if (enabled) Color.White else Color.Gray,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1
                 )
                 Text(
                     text = "${preset.sampleRate / 1000}k • ${preset.displayBitDepth}",
-                    color = Color.Gray,
+                    color = Color.DarkGray,
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -263,14 +335,19 @@ private fun PresetPill(
 @Composable
 private fun InputHardwarePill(
     deviceName: String,
+    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val alphaModifier = if (enabled) Modifier else Modifier.alpha(0.45f)
+
     Surface(
-        modifier = modifier.clickable { onClick() },
+        modifier = modifier
+            .then(alphaModifier)
+            .clickable(enabled = enabled) { onClick() },
         color = Color(0xFF2C2C2E),
         shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A3A3C))
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (enabled) Color(0xFF3A3A3C) else Color(0xFF222224))
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -279,28 +356,26 @@ private fun InputHardwarePill(
             Icon(
                 imageVector = Icons.Default.Mic,
                 contentDescription = null,
-                tint = Color(0xFFE53935),
+                tint = if (enabled) Color(0xFFE53935) else Color.DarkGray,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Column {
                 Text(
-                    text = "Mic: $deviceName",
-                    color = Color.White,
+                    text = "🎙 $deviceName",
+                    color = if (enabled) Color.White else Color.Gray,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1
                 )
                 Text(
-                    text = "Hardware Input",
-                    color = Color.Gray,
+                    text = if (enabled) "Hardware Input" else "Locked (Recording)",
+                    color = Color.DarkGray,
                     style = MaterialTheme.typography.labelSmall
                 )
             }
         }
     }
 }
-
-
 
 @Composable
 private fun SaveTakeDialog(
