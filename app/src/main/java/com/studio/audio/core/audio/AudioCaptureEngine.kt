@@ -55,9 +55,20 @@ class AudioCaptureEngine(
 
         val bufferSizeBytes = (minBufferSize * 2).coerceAtLeast(8192)
 
+        // Bluetooth SCO / BLE requires VOICE_COMMUNICATION on Android
+        val isBluetooth = targetDevice?.let {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+        } ?: false
+
+        val audioSource = if (isBluetooth) {
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        } else {
+            MediaRecorder.AudioSource.MIC
+        }
+
         val record = try {
             AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.MIC)
+                .setAudioSource(audioSource)
                 .setAudioFormat(format)
                 .setBufferSizeInBytes(bufferSizeBytes)
                 .build()
@@ -87,7 +98,7 @@ class AudioCaptureEngine(
             record.release()
             audioRecord = null
             isRecording.set(false)
-            onError(RecordingError.InitializationFailed("startRecording() failed: mic might be locked by another application"))
+            onError(RecordingError.InitializationFailed("startRecording() failed: microphone resource locked"))
             return
         }
 
@@ -105,9 +116,9 @@ class AudioCaptureEngine(
                     diskWriter.write(byteArray, 0, bytesRead)
                 } else if (bytesRead < 0) {
                     val errorMsg = when (bytesRead) {
-                        AudioRecord.ERROR_INVALID_OPERATION -> "ERROR_INVALID_OPERATION: AudioRecord state corrupt"
-                        AudioRecord.ERROR_BAD_VALUE -> "ERROR_BAD_VALUE: Bad parameter passed to HAL"
-                        AudioRecord.ERROR_DEAD_OBJECT -> "ERROR_DEAD_OBJECT: AudioFlinger died or client was preempted"
+                        AudioRecord.ERROR_INVALID_OPERATION -> "AudioRecord state corrupt (INVALID_OPERATION)"
+                        AudioRecord.ERROR_BAD_VALUE -> "Bad parameter passed to HAL (BAD_VALUE)"
+                        AudioRecord.ERROR_DEAD_OBJECT -> "Audio HAL died or client preempted (DEAD_OBJECT)"
                         else -> "AudioRecord hardware read failed with code $bytesRead"
                     }
                     withContext(Dispatchers.Main) {

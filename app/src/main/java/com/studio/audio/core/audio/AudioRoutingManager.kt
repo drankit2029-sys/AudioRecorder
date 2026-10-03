@@ -10,6 +10,8 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 
 class AudioRoutingManager(
     private val context: Context,
@@ -20,7 +22,8 @@ class AudioRoutingManager(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var activeDevice: AudioDeviceInfo? = null
-    private var isScoStarted = false
+    private var scoActive = false
+    private var scoConnectDeferred: CompletableDeferred<Boolean>? = null
 
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -41,11 +44,26 @@ class AudioRoutingManager(
 
     private val scoReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
-            val state = intent?.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
-            if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && isScoStarted) {
-                activeDevice?.let { dev ->
-                    if (isBluetoothDevice(dev.type)) {
-                        onActiveDeviceDisconnected(dev)
+            if (intent?.action != AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED) return
+            val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
+
+            when (state) {
+                AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
+                    scoActive = true
+                    scoConnectDeferred?.complete(true)
+                }
+                AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                    if (scoActive) {
+                        // Real disconnection while recording was active
+                        scoActive = false
+                        activeDevice?.let { dev ->
+                            if (isBluetoothDevice(dev.type)) {
+                                onActiveDeviceDisconnected(dev)
+                            }
+                        }
+                    } else {
+                        // Failed negotiation or initial broadcast
+                        scoConnectDeferred?.complete(false)
                     }
                 }
             }
@@ -68,7 +86,10 @@ class AudioRoutingManager(
         teardownRouting()
     }
 
-    fun setupRoutingForDevice(device: AudioDeviceInfo?): Boolean {
+    /**
+     * Activates routing and suspends until the hardware audio channel is verified.
+     */
+    suspend fun activateRoute(device: AudioDeviceInfo?): Boolean {
         activeDevice = device
         if (device == null) {
             teardownRouting()
@@ -79,41 +100,59 @@ class AudioRoutingManager(
             return activateBluetoothRoute(device)
         } else {
             teardownRouting()
+            return true
         }
-        return true
     }
 
-    private fun activateBluetoothRoute(device: AudioDeviceInfo): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val success = audioManager.setCommunicationDevice(device)
-            isScoStarted = success
-            success
+    private suspend fun activateBluetoothRoute(device: AudioDeviceInfo): Boolean {
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val setSuccess = audioManager.setCommunicationDevice(device)
+            if (!setSuccess) {
+                audioManager.mode = AudioManager.MODE_NORMAL
+                return false
+            }
+            scoActive = true
+            return true
         } else {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            val deferred = CompletableDeferred<Boolean>()
+            scoConnectDeferred = deferred
             audioManager.startBluetoothSco()
             audioManager.isBluetoothScoOn = true
-            isScoStarted = true
-            true
+
+            // Wait up to 3000ms for hardware SCO synchronization
+            val connected = withTimeoutOrNull(3000L) {
+                deferred.await()
+            } ?: false
+
+            scoConnectDeferred = null
+
+            if (!connected) {
+                teardownRouting()
+            }
+            return connected
         }
     }
 
     fun teardownRouting() {
-        if (isScoStarted) {
+        if (scoActive || audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 audioManager.clearCommunicationDevice()
             } else {
                 audioManager.isBluetoothScoOn = false
-                audioManager.stopBluetoothSco()
-                audioManager.mode = AudioManager.MODE_NORMAL
+                try {
+                    audioManager.stopBluetoothSco()
+                } catch (_: Exception) {}
             }
-            isScoStarted = false
+            audioManager.mode = AudioManager.MODE_NORMAL
+            scoActive = false
         }
         activeDevice = null
     }
 
-    private fun isBluetoothDevice(type: Int): Boolean {
+    fun isBluetoothDevice(type: Int): Boolean {
         return type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                type == AudioDeviceInfo.TYPE_BLE_HEADSET
     }
 }

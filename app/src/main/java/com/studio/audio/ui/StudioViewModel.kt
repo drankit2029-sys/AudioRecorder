@@ -8,6 +8,7 @@ import com.studio.audio.core.audio.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -88,12 +89,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             _isRecording.value = false
             activeRecordingFile = null
 
-            _errorMessage.value = "Active microphone '${device.productName}' was disconnected. Recording stopped and preserved."
-
             if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
                 _pendingSaveFile.value = stoppedFile
+                _errorMessage.value = "Microphone '${device.productName}' disconnected. Audio was saved and ready to rename."
             } else {
                 recoveryManager.markSessionCompleted()
+                _errorMessage.value = "Microphone '${device.productName}' disconnected before any audio could be captured."
             }
         }
         refreshDevices()
@@ -154,8 +155,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun selectDevice(device: AudioInputDevice) {
         _selectedDevice.value = device
         if (_isRecording.value) {
-            routingManager.setupRoutingForDevice(device.rawDeviceInfo)
-            captureEngine.switchDevice(device.rawDeviceInfo)
+            viewModelScope.launch {
+                routingManager.activateRoute(device.rawDeviceInfo)
+                captureEngine.switchDevice(device.rawDeviceInfo)
+            }
         }
     }
 
@@ -165,10 +168,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             routingManager.teardownRouting()
             _isRecording.value = false
             activeRecordingFile = null
+
             if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
                 _pendingSaveFile.value = stoppedFile
             } else {
                 recoveryManager.markSessionCompleted()
+                _errorMessage.value = "Recording stopped, but no audio samples were captured."
             }
         } else {
             startSession(destination = recoveryManager.createNewTakeFile(), append = false)
@@ -211,30 +216,45 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun startSession(destination: File, append: Boolean) {
         val device = _selectedDevice.value?.rawDeviceInfo
-        routingManager.setupRoutingForDevice(device)
 
-        activeRecordingFile = destination
-        val sampleRate = 48000
-        recoveryManager.markSessionActive(destination, sampleRate)
-
-        captureEngine.startRecording(
-            scope = viewModelScope,
-            targetDevice = device,
-            sampleRate = sampleRate,
-            destinationFile = destination,
-            append = append,
-            onError = { err ->
-                captureEngine.stopRecording()
-                routingManager.teardownRouting()
-                _isRecording.value = false
-                val msg = when (err) {
-                    is RecordingError.InitializationFailed -> err.message
-                    is RecordingError.ReadError -> err.message
-                    is RecordingError.DeviceDisconnected -> "Mic disconnected: ${err.deviceName}"
-                }
-                _errorMessage.value = msg
+        viewModelScope.launch {
+            val routeSuccess = routingManager.activateRoute(device)
+            if (!routeSuccess) {
+                _errorMessage.value = "Failed to synchronize Bluetooth audio link. Please ensure your headset is connected and retry."
+                return@launch
             }
-        )
-        _isRecording.value = true
+
+            activeRecordingFile = destination
+            val sampleRate = 48000
+            recoveryManager.markSessionActive(destination, sampleRate)
+
+            captureEngine.startRecording(
+                scope = viewModelScope,
+                targetDevice = device,
+                sampleRate = sampleRate,
+                destinationFile = destination,
+                append = append,
+                onError = { err ->
+                    val stoppedFile = captureEngine.stopRecording()
+                    routingManager.teardownRouting()
+                    _isRecording.value = false
+                    activeRecordingFile = null
+
+                    if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
+                        _pendingSaveFile.value = stoppedFile
+                    } else {
+                        recoveryManager.markSessionCompleted()
+                    }
+
+                    val msg = when (err) {
+                        is RecordingError.InitializationFailed -> err.message
+                        is RecordingError.ReadError -> err.message
+                        is RecordingError.DeviceDisconnected -> "Mic disconnected: ${err.deviceName}"
+                    }
+                    _errorMessage.value = msg
+                }
+            )
+            _isRecording.value = true
+        }
     }
 }
