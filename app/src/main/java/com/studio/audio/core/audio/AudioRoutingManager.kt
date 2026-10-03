@@ -4,8 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
@@ -25,6 +27,7 @@ class AudioRoutingManager(
     private var activeDevice: AudioDeviceInfo? = null
     private var scoActive = false
     private var scoConnectDeferred: CompletableDeferred<Boolean>? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -92,42 +95,49 @@ class AudioRoutingManager(
             return true
         }
 
-        if (isBluetoothDevice(device.type)) {
-            val success = activateBluetoothRoute(device)
+        return if (isBluetoothDevice(device.type)) {
+            val success = activateBluetoothRoute()
             if (success) {
-                // Allow the hardware SCO clock to lock before opening the recording track
-                delay(300L)
+                // Allow hardware clock to synchronize
+                delay(350L)
             }
-            return success
+            success
         } else {
             teardownRouting()
-            return true
+            true
         }
     }
 
-    private suspend fun activateBluetoothRoute(device: AudioDeviceInfo): Boolean {
+    private suspend fun activateBluetoothRoute(): Boolean {
+        requestCommunicationAudioFocus()
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val setSuccess = audioManager.setCommunicationDevice(device)
-            if (!setSuccess) {
-                audioManager.mode = AudioManager.MODE_NORMAL
-                return false
+            // Android 12+ requires a device specifically from availableCommunicationDevices
+            val commDevice = audioManager.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
             }
-            scoActive = true
-            return true
+
+            if (commDevice != null) {
+                val setSuccess = audioManager.setCommunicationDevice(commDevice)
+                if (setSuccess) {
+                    scoActive = true
+                    return true
+                }
+            }
+            teardownRouting()
+            return false
         } else {
             val deferred = CompletableDeferred<Boolean>()
             scoConnectDeferred = deferred
             audioManager.startBluetoothSco()
             audioManager.isBluetoothScoOn = true
 
-            val connected = withTimeoutOrNull(3000L) {
+            val connected = withTimeoutOrNull(3500L) {
                 deferred.await()
             } ?: false
 
             scoConnectDeferred = null
-
             if (!connected) {
                 teardownRouting()
             }
@@ -135,19 +145,41 @@ class AudioRoutingManager(
         }
     }
 
+    private fun requestCommunicationAudioFocus() {
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(audioAttributes)
+            .setOnAudioFocusChangeListener { /* handle focus preemption */ }
+            .build()
+
+        audioFocusRequest = request
+        audioManager.requestAudioFocus(request)
+    }
+
     fun teardownRouting() {
-        if (scoActive || audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                audioManager.clearCommunicationDevice()
-            } else {
-                audioManager.isBluetoothScoOn = false
-                try {
-                    audioManager.stopBluetoothSco()
-                } catch (_: Exception) {}
-            }
-            audioManager.mode = AudioManager.MODE_NORMAL
-            scoActive = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        } else {
+            audioManager.isBluetoothScoOn = false
+            try {
+                audioManager.stopBluetoothSco()
+            } catch (_: Exception) {}
         }
+
+        if (audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
+            audioManager.mode = AudioManager.MODE_NORMAL
+        }
+
+        audioFocusRequest?.let {
+            audioManager.abandonAudioFocusRequest(it)
+            audioFocusRequest = null
+        }
+
+        scoActive = false
         activeDevice = null
     }
 

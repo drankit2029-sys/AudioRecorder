@@ -42,14 +42,13 @@ class AudioCaptureEngine(
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
         } ?: false
 
-        // Attempt hardware negotiation ladder
         val initResult = buildResilientAudioRecord(targetDevice, isBluetooth, sampleRate)
         if (initResult == null) {
-            onError(RecordingError.InitializationFailed("AudioRecord returned STATE_UNINITIALIZED across all hardware fallback profiles"))
+            onError(RecordingError.InitializationFailed("Microphone initialization failed: HAL rejected communication audio track"))
             return
         }
 
-        val (record, hardwareEncoding, bufferSizeBytes) = initResult
+        val (record, hardwareEncoding, hardwareRate, bufferSizeBytes) = initResult
 
         audioRecord = record
         currentDevice = targetDevice
@@ -67,8 +66,8 @@ class AudioCaptureEngine(
         }
 
         recordingJob = scope.launch(Dispatchers.IO) {
-            if (hardwareEncoding == AudioFormat.ENCODING_PCM_FLOAT) {
-                // Direct float capture
+            if (hardwareEncoding == AudioFormat.ENCODING_PCM_FLOAT && hardwareRate == sampleRate) {
+                // Direct 48kHz Float capture
                 val byteBuffer = ByteBuffer.allocateDirect(bufferSizeBytes).order(ByteOrder.LITTLE_ENDIAN)
                 val byteArray = ByteArray(bufferSizeBytes)
 
@@ -86,10 +85,13 @@ class AudioCaptureEngine(
                     }
                 }
             } else {
-                // 16-bit capture -> Real-time conversion to 32-bit Float
+                // Bluetooth 16-bit PCM (16kHz or 8kHz) -> Upsample to 48kHz 32-bit Float
+                val upsampleFactor = sampleRate / hardwareRate
                 val shortBuffer = ShortArray(bufferSizeBytes / 2)
-                val floatOutputBuffer = ByteBuffer.allocateDirect(shortBuffer.size * 4).order(ByteOrder.LITTLE_ENDIAN)
-                val floatByteArray = ByteArray(shortBuffer.size * 4)
+                val outputFloatsCount = shortBuffer.size * upsampleFactor
+                val floatOutputBuffer = ByteBuffer.allocateDirect(outputFloatsCount * 4).order(ByteOrder.LITTLE_ENDIAN)
+                val floatByteArray = ByteArray(outputFloatsCount * 4)
+                var lastSample = 0.0f
 
                 while (isRecording.get() && isActive) {
                     val shortsRead = record.read(shortBuffer, 0, shortBuffer.size, AudioRecord.READ_BLOCKING)
@@ -97,13 +99,19 @@ class AudioCaptureEngine(
                     if (shortsRead > 0) {
                         floatOutputBuffer.clear()
                         for (i in 0 until shortsRead) {
-                            val floatVal = shortBuffer[i] / 32768.0f
-                            floatOutputBuffer.putFloat(floatVal)
+                            val currentSample = shortBuffer[i] / 32768.0f
+                            val delta = (currentSample - lastSample) / upsampleFactor.toFloat()
+
+                            for (step in 1..upsampleFactor) {
+                                floatOutputBuffer.putFloat(lastSample + (delta * step))
+                            }
+                            lastSample = currentSample
                         }
-                        val bytesConverted = shortsRead * 4
+
+                        val bytesToWrite = shortsRead * upsampleFactor * 4
                         floatOutputBuffer.position(0)
-                        floatOutputBuffer.get(floatByteArray, 0, bytesConverted)
-                        diskWriter.write(floatByteArray, 0, bytesConverted)
+                        floatOutputBuffer.get(floatByteArray, 0, bytesToWrite)
+                        diskWriter.write(floatByteArray, 0, bytesToWrite)
                     } else if (shortsRead < 0) {
                         handleError(shortsRead, onError)
                         break
@@ -116,6 +124,7 @@ class AudioCaptureEngine(
     private data class InitializedRecord(
         val record: AudioRecord,
         val encoding: Int,
+        val sampleRate: Int,
         val bufferSizeBytes: Int
     )
 
@@ -127,11 +136,11 @@ class AudioCaptureEngine(
     ): InitializedRecord? {
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
 
-        // Fallback strategies: Bluetooth requires 16-bit PCM; built-in/USB tries Float first
+        // Bluetooth profile: Try native 16kHz wideband, then 8kHz narrowband with VOICE_COMMUNICATION
         val configurations = if (isBluetooth) {
             listOf(
-                Triple(MediaRecorder.AudioSource.VOICE_COMMUNICATION, AudioFormat.ENCODING_PCM_16BIT, sampleRate),
-                Triple(MediaRecorder.AudioSource.MIC, AudioFormat.ENCODING_PCM_16BIT, sampleRate),
+                Triple(MediaRecorder.AudioSource.VOICE_COMMUNICATION, AudioFormat.ENCODING_PCM_16BIT, 16000),
+                Triple(MediaRecorder.AudioSource.VOICE_COMMUNICATION, AudioFormat.ENCODING_PCM_16BIT, 8000),
                 Triple(MediaRecorder.AudioSource.MIC, AudioFormat.ENCODING_PCM_16BIT, 16000)
             )
         } else {
@@ -165,13 +174,12 @@ class AudioCaptureEngine(
             } ?: continue
 
             if (record.state == AudioRecord.STATE_INITIALIZED) {
-                // Set preferredDevice only on non-Bluetooth inputs (avoid double-routing conflicts with setCommunicationDevice)
                 if (targetDevice != null && !isBluetooth) {
                     try {
                         record.preferredDevice = targetDevice
                     } catch (_: Exception) {}
                 }
-                return InitializedRecord(record, encoding, bufferSize)
+                return InitializedRecord(record, encoding, rate, bufferSize)
             } else {
                 record.release()
             }
