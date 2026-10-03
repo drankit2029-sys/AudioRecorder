@@ -22,6 +22,7 @@ import com.studio.audio.core.audio.AudioInputDevice
 import com.studio.audio.core.audio.AudioPreset
 import com.studio.audio.core.audio.InterruptedSession
 import com.studio.audio.ui.components.PresetSelectionDialog
+import com.studio.audio.ui.components.DeviceSelectionDialog
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -287,50 +288,7 @@ private fun InputHardwarePill(
     }
 }
 
-@Composable
-private fun DeviceSelectionDialog(
-    devices: List<AudioInputDevice>,
-    currentDevice: AudioInputDevice?,
-    onDeviceSelected: (AudioInputDevice) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Available Audio Inputs") },
-        text = {
-            if (devices.isEmpty()) {
-                Text("No input devices detected.")
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                    items(devices) { device ->
-                        val isSelected = device.id == currentDevice?.id
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onDeviceSelected(device) }
-                                .padding(vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = "${device.name} (${device.typeLabel})",
-                                color = if (isSelected) Color(0xFF1E88E5) else Color.White,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            val ratesText = if (device.isUnconstrained) "Arbitrary / System Managed" else device.sampleRates.joinToString { "${it}Hz" }
-                            Text(
-                                text = "Supported: $ratesText",
-                                color = Color.Gray,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
-        }
-    )
-}
+
 
 @Composable
 private fun SaveTakeDialog(
