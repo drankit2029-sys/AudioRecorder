@@ -90,7 +90,7 @@ fun LibraryScreen(
     }
 }
 
-@Composable
+@@Composable
 private fun RecordingItemRow(
     recording: SavedRecording,
     isCurrentTrack: Boolean,
@@ -104,6 +104,8 @@ private fun RecordingItemRow(
     val dateFormat = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
     val formattedDate = dateFormat.format(Date(recording.lastModified))
     val sizeMb = String.format(Locale.US, "%.1f MB", recording.sizeBytes / (1024f * 1024f))
+    val channelLabel = if (recording.channelCount == 1) "Mono" else if (recording.channelCount == 2) "Stereo" else "${recording.channelCount}ch"
+    val sampleRateLabel = if (recording.sampleRate % 1000 == 0) "${recording.sampleRate / 1000}kHz" else "${recording.sampleRate}Hz"
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -147,6 +149,20 @@ private fun RecordingItemRow(
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Audio Format & Spec Badge
+                    Surface(
+                        color = Color(0xFF2A2A2A),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "${recording.formatLabel} • $sampleRateLabel • $channelLabel",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF81D4FA),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
 
                 IconButton(onClick = onDelete) {
@@ -200,6 +216,7 @@ private fun RecordingItemRow(
         }
     }
 }
+
 
 private fun formatMsToTimestamp(ms: Long): String {
     val totalSeconds = ms / 1000

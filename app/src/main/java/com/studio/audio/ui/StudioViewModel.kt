@@ -63,7 +63,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    // Library Player Observable States
     val isPlayingAudio: StateFlow<Boolean> = playerManager.isPlaying
     val currentPlayingFile: StateFlow<File?> = playerManager.currentPlayingFile
     val playbackPositionMs: StateFlow<Long> = playerManager.currentPositionMs
@@ -90,7 +89,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         playerManager.release()
     }
 
-    // Media Player Control Methods
     fun playRecording(recording: SavedRecording, startPositionMs: Long = 0L) {
         if (_isRecording.value) return
         playerManager.play(viewModelScope, recording.file, startPositionMs)
@@ -117,7 +115,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
             if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
                 _pendingSaveFile.value = stoppedFile
-                _errorMessage.value = "Microphone '${device.productName}' disconnected. Audio saved and ready to rename."
+                _errorMessage.value = "Microphone '${device.productName}' disconnected. Audio saved and ready to convert."
             } else {
                 recoveryManager.markSessionCompleted()
                 _errorMessage.value = "Microphone '${device.productName}' disconnected before audio could be captured."
@@ -217,7 +215,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val finalTitle = title.ifBlank {
             "Take_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}"
         }
-        recoveryManager.commitRecording(file, finalTitle)
+        val preset = _selectedPreset.value
+
+        // Transcode from 32-bit Float PCM to the preset format (e.g. 24-bit WAV, 16-bit WAV, AAC)
+        recoveryManager.commitRecording(
+            tempFile = file,
+            userTitle = finalTitle,
+            sampleRate = preset.sampleRate,
+            channelCount = preset.channelCount,
+            preset = preset
+        )
         _pendingSaveFile.value = null
         refreshLibrary()
     }
@@ -249,6 +256,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun startSession(destination: File, append: Boolean) {
         val device = _selectedDevice.value?.rawDeviceInfo
+        val preset = _selectedPreset.value
 
         viewModelScope.launch {
             val routeSuccess = routingManager.activateRoute(device)
@@ -258,13 +266,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             activeRecordingFile = destination
-            val sampleRate = 48000
-            recoveryManager.markSessionActive(destination, sampleRate)
+            recoveryManager.markSessionActive(destination, preset.sampleRate, preset.channelCount)
 
             captureEngine.startRecording(
                 scope = viewModelScope,
                 targetDevice = device,
-                sampleRate = sampleRate,
+                sampleRate = preset.sampleRate,
+                channelCount = preset.channelCount,
                 destinationFile = destination,
                 append = append,
                 onError = { err ->

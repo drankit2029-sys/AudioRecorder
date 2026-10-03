@@ -1,20 +1,17 @@
 package com.studio.audio.core.audio
 
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
-import java.io.RandomAccessFile
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.concurrent.atomic.AtomicBoolean
 
-class LibraryPlayerManager(
-    private val renderer: PcmHardwareRenderer = PcmHardwareRenderer()
-) {
-    private var streamingJob: Job? = null
-    private val isRunning = AtomicBoolean(false)
+class LibraryPlayerManager {
+
+    private var mediaPlayer: MediaPlayer? = null
+    private var progressTrackerJob: Job? = null
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -35,105 +32,132 @@ class LibraryPlayerManager(
     ) {
         if (!file.exists() || file.length() == 0L) return
 
+        // Reuse active player if toggling the same track
+        if (_currentPlayingFile.value?.absolutePath == file.absolutePath && mediaPlayer != null) {
+            mediaPlayer?.let { player ->
+                if (startPositionMs > 0L) {
+                    player.seekTo(startPositionMs.toInt())
+                    _currentPositionMs.value = startPositionMs
+                }
+                player.start()
+                _isPlaying.value = true
+                startProgressPolling(scope)
+                return
+            }
+        }
+
         stop()
 
         _currentPlayingFile.value = file
-        val fileLengthBytes = file.length()
-        val calculatedDurationMs = (fileLengthBytes * 1000L) / renderer.bytesPerSecond
-        _totalDurationMs.value = calculatedDurationMs
 
-        // Snap target byte offset to 4-byte float boundary
-        val targetByteOffset = ((startPositionMs * renderer.bytesPerSecond) / 1000L)
-            .coerceIn(0L, fileLengthBytes)
-            .let { (it / renderer.bytesPerSample) * renderer.bytesPerSample }
+        val player = MediaPlayer().apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .build()
+            )
+            setOnCompletionListener {
+                _isPlaying.value = false
+                _currentPositionMs.value = 0L
+                progressTrackerJob?.cancel()
+            }
+            setOnErrorListener { _, _, _ ->
+                stop()
+                true
+            }
+        }
 
-        _currentPositionMs.value = (targetByteOffset * 1000L) / renderer.bytesPerSecond
+        try {
+            player.setDataSource(file.absolutePath)
+            player.prepare()
+            _totalDurationMs.value = player.duration.toLong().coerceAtLeast(0L)
 
-        val initialized = renderer.initializeHardware()
-        if (!initialized) return
+            if (startPositionMs > 0L) {
+                player.seekTo(startPositionMs.toInt())
+                _currentPositionMs.value = startPositionMs
+            } else {
+                _currentPositionMs.value = 0L
+            }
 
-        renderer.flush()
-        val started = renderer.play()
-        if (!started) return
+            player.start()
+            mediaPlayer = player
+            _isPlaying.value = true
+            startProgressPolling(scope)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            player.release()
+            stop()
+        }
+    }
 
-        isRunning.set(true)
-        _isPlaying.value = true
-
-        streamingJob = scope.launch(Dispatchers.IO) {
-            var randomAccessFile: RandomAccessFile? = null
-            try {
-                randomAccessFile = RandomAccessFile(file, "r")
-                randomAccessFile.seek(targetByteOffset)
-
-                val readChunkSize = 4096
-                val byteBuffer = ByteBuffer.allocateDirect(readChunkSize).order(ByteOrder.LITTLE_ENDIAN)
-                val tempByteArray = ByteArray(readChunkSize)
-                var currentBytesReadOffset = targetByteOffset
-
-                while (isRunning.get() && isActive) {
-                    val bytesRead = randomAccessFile.read(tempByteArray, 0, tempByteArray.size)
-
-                    if (bytesRead > 0) {
-                        byteBuffer.clear()
-                        byteBuffer.put(tempByteArray, 0, bytesRead)
-                        byteBuffer.position(0)
-
-                        renderer.write(byteBuffer, bytesRead)
-
-                        currentBytesReadOffset += bytesRead
-                        val progressMs = (currentBytesReadOffset * 1000L) / renderer.bytesPerSecond
-                        _currentPositionMs.value = progressMs
-                    } else {
-                        // EOF reached: gracefully terminate playback loop
-                        break
+    private fun startProgressPolling(scope: CoroutineScope) {
+        progressTrackerJob?.cancel()
+        progressTrackerJob = scope.launch(Dispatchers.Main) {
+            while (_isPlaying.value && isActive) {
+                mediaPlayer?.let { player ->
+                    if (player.isPlaying) {
+                        _currentPositionMs.value = player.currentPosition.toLong().coerceAtLeast(0L)
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                randomAccessFile?.close()
-                withContext(Dispatchers.Main) {
-                    stop()
-                }
+                delay(50L) // 20Hz UI progress update
             }
         }
     }
 
     fun pause() {
-        if (!isRunning.get()) return
-        isRunning.set(false)
+        progressTrackerJob?.cancel()
+        progressTrackerJob = null
+        mediaPlayer?.let { player ->
+            try {
+                if (player.isPlaying) {
+                    player.pause()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
         _isPlaying.value = false
-        streamingJob?.cancel()
-        streamingJob = null
-        renderer.pause()
     }
 
     fun seekTo(
         scope: CoroutineScope,
         positionMs: Long
     ) {
-        val file = _currentPlayingFile.value ?: return
-        val wasPlaying = _isPlaying.value
-        play(scope, file, positionMs)
-        if (!wasPlaying) {
-            pause()
-            _currentPositionMs.value = positionMs
+        val target = positionMs.coerceIn(0L, _totalDurationMs.value)
+        mediaPlayer?.let { player ->
+            try {
+                player.seekTo(target.toInt())
+                _currentPositionMs.value = target
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
     fun stop() {
-        isRunning.set(false)
+        progressTrackerJob?.cancel()
+        progressTrackerJob = null
+
+        mediaPlayer?.let { player ->
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+                player.reset()
+                player.release()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        mediaPlayer = null
         _isPlaying.value = false
-        streamingJob?.cancel()
-        streamingJob = null
-        renderer.stop()
+        _currentPositionMs.value = 0L
     }
 
     fun release() {
         stop()
-        renderer.release()
         _currentPlayingFile.value = null
-        _currentPositionMs.value = 0L
         _totalDurationMs.value = 0L
     }
 }

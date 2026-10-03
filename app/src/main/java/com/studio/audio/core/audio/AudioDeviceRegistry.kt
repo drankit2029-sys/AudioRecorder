@@ -62,17 +62,30 @@ class AudioDeviceRegistry(private val context: Context) {
             val rawRates = device.sampleRates.toList()
             val rawChannels = device.channelCounts.toList()
 
-            devices.add(
-                AudioInputDevice(
-                    id = device.id,
-                    name = resolveFriendlyName(device),
-                    typeLabel = mapDeviceTypeToString(device.type),
-                    sampleRates = rawRates,
-                    channelCounts = rawChannels,
-                    isUnconstrained = rawRates.isEmpty(),
-                    rawDeviceInfo = device
-                )
-            )
+            // In AudioDeviceRegistry.kt inside getAvailableInputDevices():
+
+            val isBluetooth = device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || 
+                  device.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+
+            val effectiveRates = if (isBluetooth) {
+            // Physical over-the-air HFP/SCO constraints: CVSD (8kHz) or mSBC (16kHz)
+            listOf(8000, 16000)
+            } else {
+            rawRates
+        }
+
+          devices.add(
+              AudioInputDevice(
+                  id = device.id,
+                  name = resolveFriendlyName(device),
+                  typeLabel = mapDeviceTypeToString(device.type),
+                  sampleRates = effectiveRates,
+                  channelCounts = if (isBluetooth) listOf(1) else rawChannels, // SCO is strictly Mono
+                  isUnconstrained = if (isBluetooth) false else rawRates.isEmpty(),
+                  rawDeviceInfo = device
+              )
+          )
+
         }
 
         return devices

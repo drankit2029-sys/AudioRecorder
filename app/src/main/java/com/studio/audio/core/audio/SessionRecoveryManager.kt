@@ -9,12 +9,16 @@ data class SavedRecording(
     val name: String,
     val durationSeconds: Long,
     val sizeBytes: Long,
-    val lastModified: Long
+    val lastModified: Long,
+    val sampleRate: Int,
+    val channelCount: Int,
+    val formatLabel: String
 )
 
 data class InterruptedSession(
     val audioFile: File,
     val sampleRate: Int,
+    val channelCount: Int,
     val bytesWritten: Long,
     val durationSeconds: Long
 )
@@ -34,10 +38,11 @@ class SessionRecoveryManager(private val context: Context) {
     }
 
     @Synchronized
-    fun markSessionActive(file: File, sampleRate: Int) {
+    fun markSessionActive(file: File, sampleRate: Int, channelCount: Int) {
         val json = JSONObject().apply {
             put("filePath", file.absolutePath)
             put("sampleRate", sampleRate)
+            put("channelCount", channelCount)
             put("timestamp", System.currentTimeMillis())
         }
         recoveryDescriptorFile.writeText(json.toString())
@@ -51,42 +56,95 @@ class SessionRecoveryManager(private val context: Context) {
     }
 
     @Synchronized
-    fun commitRecording(tempFile: File, userTitle: String, sampleRate: Int = 48000): File {
+    fun commitRecording(
+        tempFile: File,
+        userTitle: String,
+        sampleRate: Int,
+        channelCount: Int,
+        preset: AudioPreset
+    ): File {
         markSessionCompleted()
+
         val sanitizedTitle = userTitle.trim().replace(Regex("[^a-zA-Z0-9._ -]"), "_").ifBlank {
             "Take_${System.currentTimeMillis()}"
         }
 
-        var destination = File(recordingsDir, "$sanitizedTitle.pcm")
+        val extension = preset.format.extension
+        var destination = File(recordingsDir, "$sanitizedTitle.$extension")
         var counter = 1
         while (destination.exists()) {
-            destination = File(recordingsDir, "${sanitizedTitle}_($counter).pcm")
+            destination = File(recordingsDir, "${sanitizedTitle}_($counter).$extension")
             counter++
         }
 
-        tempFile.renameTo(destination)
-        return destination
+        // Convert the 32-bit Float PCM to the preset format (WAV 16/24/32 float or AAC)
+        val success = AudioConverter.convertPcmFloatToPreset(
+            inputFile = tempFile,
+            outputFile = destination,
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            preset = preset
+        )
+
+        // Delete temporary float file once converted
+        tempFile.delete()
+
+        return if (success) destination else tempFile
     }
 
     @Synchronized
-    fun getSavedRecordings(sampleRate: Int = 48000): List<SavedRecording> {
+    fun getSavedRecordings(): List<SavedRecording> {
         val files = recordingsDir.listFiles { file ->
-            file.isFile && file.extension == "pcm" && !file.name.startsWith("temp_take_")
+            file.isFile &&
+                !file.name.startsWith("temp_take_") &&
+                file.name != "active_session.json"
         } ?: emptyArray()
 
-        // 32-bit Float Mono = 4 bytes per sample
-        val bytesPerSec = sampleRate * 4L
-
         return files.map { file ->
-            val durationSec = if (bytesPerSec > 0) file.length() / bytesPerSec else 0L
-            SavedRecording(
-                file = file,
-                name = file.nameWithoutExtension,
-                durationSeconds = durationSec,
-                sizeBytes = file.length(),
-                lastModified = file.lastModified()
-            )
+            parseSavedRecording(file)
         }.sortedByDescending { it.lastModified }
+    }
+
+    private fun parseSavedRecording(file: File): SavedRecording {
+        var durationSec = 0L
+        var sampleRate = 48000
+        var channelCount = 1
+        var formatLabel = file.extension.uppercase()
+
+        if (file.extension.equals("wav", ignoreCase = true) && file.length() >= 44L) {
+            try {
+                val raf = java.io.RandomAccessFile(file, "r")
+                val header = ByteArray(44)
+                raf.readFully(header)
+                raf.close()
+
+                val bb = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val formatTag = bb.getShort(20).toInt()
+                channelCount = bb.getShort(22).toInt()
+                sampleRate = bb.getInt(24)
+                val byteRate = bb.getInt(28)
+                val bitsPerSample = bb.getShort(34).toInt()
+
+                if (byteRate > 0) {
+                    durationSec = (file.length() - 44L) / byteRate
+                }
+                formatLabel = if (formatTag == 3) "32-bit Float WAV" else "$bitsPerSample-bit WAV"
+            } catch (_: Exception) {}
+        } else {
+            // General estimate based on file size
+            durationSec = file.length() / (48000 * 2)
+        }
+
+        return SavedRecording(
+            file = file,
+            name = file.nameWithoutExtension,
+            durationSeconds = durationSec,
+            sizeBytes = file.length(),
+            lastModified = file.lastModified(),
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            formatLabel = formatLabel
+        )
     }
 
     @Synchronized
@@ -103,14 +161,18 @@ class SessionRecoveryManager(private val context: Context) {
             val json = JSONObject(raw)
             val filePath = json.getString("filePath")
             val sampleRate = json.getInt("sampleRate")
+            val channelCount = json.optInt("channelCount", 1)
             val file = File(filePath)
 
             if (file.exists() && file.length() > 0) {
-                val bytesPerSec = sampleRate * 4L
-                val durationSec = file.length() / bytesPerSec
+                // Internal temp takes are ALWAYS 32-bit Float PCM = 4 bytes per sample per channel
+                val bytesPerSec = sampleRate * channelCount * 4L
+                val durationSec = if (bytesPerSec > 0) file.length() / bytesPerSec else 0L
+
                 InterruptedSession(
                     audioFile = file,
                     sampleRate = sampleRate,
+                    channelCount = channelCount,
                     bytesWritten = file.length(),
                     durationSeconds = durationSec
                 )
@@ -118,8 +180,7 @@ class SessionRecoveryManager(private val context: Context) {
                 markSessionCompleted()
                 null
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
             markSessionCompleted()
             null
         }
