@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -81,7 +82,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     var showDeviceDialog by remember { mutableStateOf(false) }
     var showPresetDialog by remember { mutableStateOf(false) }
 
-    // Permission Prompt State
     var permissionsPromptList by remember { mutableStateOf<List<String>?>(null) }
     var isPermanentlyDenied by remember { mutableStateOf(false) }
 
@@ -101,9 +101,9 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             missing.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        val isBt = selectedDevice?.let {
-            it.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-            it.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+        val isBt = selectedDevice?.rawDeviceInfo?.let {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
         } ?: false
 
         if (isBt && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -125,7 +125,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             requestBatteryExemptionIfNecessary(context)
             viewModel.startRecordingTake()
         } else {
-            // Check if permanently denied ("Don't ask again")
             val permanent = activity?.let { act ->
                 stillMissing.any { perm -> !ActivityCompat.shouldShowRequestPermissionRationale(act, perm) }
             } ?: false
@@ -217,7 +216,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
-    // Permission Explanation & Confirmation Prompt
     permissionsPromptList?.let { missingList ->
         PermissionExplanationDialog(
             missingPermissions = missingList,
@@ -234,7 +232,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 }
             },
             onDismiss = {
-                // User rejected: dismiss cleanly, action is re-prompted on next record click
                 permissionsPromptList = null
             }
         )
@@ -281,10 +278,12 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 viewModel.selectDevice(device)
                 showDeviceDialog = false
 
-                // If user selected Bluetooth, verify BT permission immediately
-                if (device.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    device.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
-                ) {
+                val isBt = device.rawDeviceInfo?.let {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                } ?: false
+
+                if (isBt) {
                     val missing = checkMissingPermissions()
                     if (missing.contains(Manifest.permission.BLUETOOTH_CONNECT)) {
                         permissionsPromptList = listOf(Manifest.permission.BLUETOOTH_CONNECT)
