@@ -29,7 +29,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _selectedDevice = MutableStateFlow<AudioInputDevice?>(null)
     val selectedDevice: StateFlow<AudioInputDevice?> = _selectedDevice.asStateFlow()
 
-    private val _selectedPreset = MutableStateFlow<AudioPreset>(AudioPresetValidator.POPULAR_PRESETS.first())
+    private val _selectedPreset = MutableStateFlow(AudioPresetValidator.POPULAR_PRESETS.first())
     val selectedPreset: StateFlow<AudioPreset> = _selectedPreset.asStateFlow()
 
     private val _customPreset = MutableStateFlow(
@@ -58,7 +58,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _savedRecordings = MutableStateFlow<List<SavedRecording>>(emptyList())
     val savedRecordings: StateFlow<List<SavedRecording>> = _savedRecordings.asStateFlow()
 
-    // Hardware Error / Disconnection Alert
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 

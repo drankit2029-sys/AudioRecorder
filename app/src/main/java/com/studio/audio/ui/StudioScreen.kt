@@ -90,7 +90,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
-    // Hardware Error / Disconnection Alert
     errorMessage?.let { errorText ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissError() },
@@ -104,7 +103,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // Preset Selection Dialog
     if (showPresetDialog) {
         PresetSelectionDialog(
             currentPreset = selectedPreset,
@@ -121,7 +119,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // Audio Input Device Selector Dialog
     if (showDeviceDialog) {
         DeviceSelectionDialog(
             devices = devices,
@@ -134,7 +131,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // Save Take Dialog
     pendingSaveFile?.let { file ->
         SaveTakeDialog(
             tempFile = file,
@@ -143,7 +139,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // Interrupted Take Recovery Dialog
     interruptedSession?.let { session ->
         RecoveryPromptDialog(
             session = session,
@@ -237,7 +232,7 @@ private fun PresetPill(
             Spacer(modifier = Modifier.width(6.dp))
             Column {
                 Text(
-                    text = "🎛 ${preset.name}",
+                    text = "Preset: ${preset.name}",
                     color = Color.White,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1
@@ -277,7 +272,7 @@ private fun InputHardwarePill(
             Spacer(modifier = Modifier.width(6.dp))
             Column {
                 Text(
-                    text = "🎙 $deviceName",
+                    text = "Mic: $deviceName",
                     color = Color.White,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1

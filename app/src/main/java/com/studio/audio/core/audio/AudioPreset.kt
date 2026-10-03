@@ -3,13 +3,18 @@ package com.studio.audio.core.audio
 import android.media.MediaCodecList
 import android.media.MediaFormat
 
-enum class AudioEncodingFormat(val label: String, val mimeType: String?, val isRawPcm: Boolean) {
-    WAV_PCM_16("WAV (16-bit PCM)", null, true),
-    WAV_PCM_24("WAV (24-bit PCM)", null, true),
-    WAV_PCM_FLOAT("WAV (32-bit Float)", null, true),
-    AAC_LC("AAC-LC (Compressed)", MediaFormat.MIMETYPE_AUDIO_AAC, false),
-    OPUS("Opus (Compressed)", MediaFormat.MIMETYPE_AUDIO_OPUS, false),
-    FLAC("FLAC (Lossless)", MediaFormat.MIMETYPE_AUDIO_FLAC, false)
+enum class AudioEncodingFormat(
+    val label: String,
+    val extension: String,
+    val mimeType: String?,
+    val isRawPcm: Boolean
+) {
+    WAV_PCM_16("WAV (16-bit PCM)", "wav", null, true),
+    WAV_PCM_24("WAV (24-bit PCM)", "wav", null, true),
+    WAV_PCM_FLOAT("WAV (32-bit Float)", "wav", null, true),
+    AAC_LC("AAC-LC (Compressed)", "m4a", MediaFormat.MIMETYPE_AUDIO_AAC, false),
+    OPUS("Opus (Compressed)", "opus", MediaFormat.MIMETYPE_AUDIO_OPUS, false),
+    FLAC("FLAC (Lossless)", "flac", MediaFormat.MIMETYPE_AUDIO_FLAC, false)
 }
 
 data class AudioPreset(
@@ -29,6 +34,20 @@ data class CompatibilityResult(
 )
 
 object AudioPresetValidator {
+
+    val AVAILABLE_SAMPLE_RATES = listOf(
+        8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 176400, 192000
+    )
+
+    val AVAILABLE_CHANNEL_COUNTS = listOf(
+        1 to "Mono",
+        2 to "Stereo",
+        4 to "4ch",
+        6 to "5.1 Surround",
+        8 to "8ch"
+    )
+
+    val AVAILABLE_BIT_DEPTHS = listOf("16-bit", "24-bit", "32-bit Float")
 
     val POPULAR_PRESETS = listOf(
         AudioPreset(
@@ -90,7 +109,6 @@ object AudioPresetValidator {
     fun validate(preset: AudioPreset, device: AudioInputDevice?): CompatibilityResult {
         val reasons = mutableListOf<String>()
 
-        // 1. HARDWARE CHECK: Sample rate (Only validate if mic reports discrete fixed rates)
         if (device != null && !device.isUnconstrained && device.sampleRates.isNotEmpty()) {
             if (preset.sampleRate !in device.sampleRates) {
                 reasons.add(
@@ -99,7 +117,6 @@ object AudioPresetValidator {
             }
         }
 
-        // 2. HARDWARE CHECK: Channel count
         if (device != null && device.channelCounts.isNotEmpty()) {
             if (preset.channelCount !in device.channelCounts) {
                 val label = if (preset.channelCount == 1) "Mono" else if (preset.channelCount == 2) "Stereo" else "${preset.channelCount} Channels"
@@ -109,7 +126,6 @@ object AudioPresetValidator {
             }
         }
 
-        // 3. SYSTEM OS CHECK: Audio encoder capability (Microphone is NOT checked for this)
         if (!preset.format.isRawPcm && preset.format.mimeType != null) {
             val hasSystemEncoder = checkSystemEncoderSupport(preset.format.mimeType)
             if (!hasSystemEncoder) {
@@ -131,7 +147,7 @@ object AudioPresetValidator {
             codecList.codecInfos.any { info ->
                 info.isEncoder && info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
