@@ -232,13 +232,13 @@ private fun PresetPill(
             Spacer(modifier = Modifier.width(6.dp))
             Column {
                 Text(
-                    text = "Preset: ${preset.name}",
+                    text = "🎛 ${preset.name}",
                     color = Color.White,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1
                 )
                 Text(
-                    text = "${preset.sampleRate / 1000}k • ${preset.bitDepth}",
+                    text = "${preset.sampleRate / 1000}k • ${preset.displayBitDepth}",
                     color = Color.Gray,
                     style = MaterialTheme.typography.labelSmall
                 )

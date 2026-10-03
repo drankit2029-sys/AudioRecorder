@@ -3,19 +3,53 @@ package com.studio.audio.core.audio
 import android.media.MediaCodecList
 import android.media.MediaFormat
 
-enum class AudioEncodingFormat(
+enum class BitDepth(val label: String, val bitCount: Int) {
+    BIT_16("16-bit", 16),
+    BIT_24("24-bit", 24),
+    FLOAT_32("32-bit Float", 32);
+
+    override fun toString(): String = label
+}
+
+enum class AudioFormatType(
     val label: String,
     val extension: String,
     val mimeType: String?,
-    val isRawPcm: Boolean
+    val isRawPcm: Boolean,
+    val supportedBitDepths: List<BitDepth>
 ) {
-    WAV_PCM_16("WAV (16-bit PCM)", "wav", null, true),
-    WAV_PCM_24("WAV (24-bit PCM)", "wav", null, true),
-    WAV_PCM_FLOAT("WAV (32-bit Float)", "wav", null, true),
-    AAC_LC("AAC-LC (Compressed)", "m4a", MediaFormat.MIMETYPE_AUDIO_AAC, false),
-    OPUS("Opus (Compressed)", "opus", MediaFormat.MIMETYPE_AUDIO_OPUS, false),
-    FLAC("FLAC (Lossless)", "flac", MediaFormat.MIMETYPE_AUDIO_FLAC, false)
+    WAV(
+        label = "WAV (Uncompressed PCM)",
+        extension = "wav",
+        mimeType = null,
+        isRawPcm = true,
+        supportedBitDepths = listOf(BitDepth.BIT_16, BitDepth.BIT_24, BitDepth.FLOAT_32)
+    ),
+    FLAC(
+        label = "FLAC (Lossless)",
+        extension = "flac",
+        mimeType = MediaFormat.MIMETYPE_AUDIO_FLAC,
+        isRawPcm = false,
+        supportedBitDepths = listOf(BitDepth.BIT_16, BitDepth.BIT_24)
+    ),
+    AAC(
+        label = "AAC-LC (Compressed)",
+        extension = "m4a",
+        mimeType = MediaFormat.MIMETYPE_AUDIO_AAC,
+        isRawPcm = false,
+        supportedBitDepths = emptyList() // Lossy: Bit-depth does not apply
+    ),
+    OPUS(
+        label = "Opus (Compressed)",
+        extension = "opus",
+        mimeType = MediaFormat.MIMETYPE_AUDIO_OPUS,
+        isRawPcm = false,
+        supportedBitDepths = emptyList() // Lossy: Fixed perceptual representation
+    )
 }
+
+// Backward-compatible type alias
+typealias AudioEncodingFormat = AudioFormatType
 
 data class AudioPreset(
     val id: String,
@@ -23,10 +57,13 @@ data class AudioPreset(
     val description: String,
     val sampleRate: Int,
     val channelCount: Int,
-    val bitDepth: String,
-    val format: AudioEncodingFormat,
+    val bitDepth: BitDepth?,
+    val format: AudioFormatType,
     val isCustom: Boolean = false
-)
+) {
+    val displayBitDepth: String
+        get() = bitDepth?.label ?: "Compressed"
+}
 
 data class CompatibilityResult(
     val isSupported: Boolean,
@@ -40,14 +77,12 @@ object AudioPresetValidator {
     )
 
     val AVAILABLE_CHANNEL_COUNTS = listOf(
-        1 to "Mono",
-        2 to "Stereo",
-        4 to "4ch",
-        6 to "5.1 Surround",
-        8 to "8ch"
+        1 to "1 (Mono)",
+        2 to "2 (Stereo)",
+        4 to "4 (Quadraphonic)",
+        6 to "6 (5.1 Surround)",
+        8 to "8 (Octa / Multi-channel)"
     )
-
-    val AVAILABLE_BIT_DEPTHS = listOf("16-bit", "24-bit", "32-bit Float")
 
     val POPULAR_PRESETS = listOf(
         AudioPreset(
@@ -56,8 +91,8 @@ object AudioPresetValidator {
             description = "Lightweight mono capture for voice notes & transcripts",
             sampleRate = 44100,
             channelCount = 1,
-            bitDepth = "16-bit",
-            format = AudioEncodingFormat.WAV_PCM_16
+            bitDepth = BitDepth.BIT_16,
+            format = AudioFormatType.WAV
         ),
         AudioPreset(
             id = "preset_podcast",
@@ -65,8 +100,8 @@ object AudioPresetValidator {
             description = "48 kHz broadcast standard with stereo imaging",
             sampleRate = 48000,
             channelCount = 2,
-            bitDepth = "24-bit",
-            format = AudioEncodingFormat.WAV_PCM_24
+            bitDepth = BitDepth.BIT_24,
+            format = AudioFormatType.WAV
         ),
         AudioPreset(
             id = "preset_raw_wav",
@@ -74,8 +109,8 @@ object AudioPresetValidator {
             description = "Full dynamic range without digital clipping risk",
             sampleRate = 48000,
             channelCount = 2,
-            bitDepth = "32-bit Float",
-            format = AudioEncodingFormat.WAV_PCM_FLOAT
+            bitDepth = BitDepth.FLOAT_32,
+            format = AudioFormatType.WAV
         ),
         AudioPreset(
             id = "preset_highres",
@@ -83,8 +118,8 @@ object AudioPresetValidator {
             description = "Mastering-grade fidelity for acoustic capture",
             sampleRate = 96000,
             channelCount = 2,
-            bitDepth = "24-bit",
-            format = AudioEncodingFormat.WAV_PCM_24
+            bitDepth = BitDepth.BIT_24,
+            format = AudioFormatType.WAV
         ),
         AudioPreset(
             id = "preset_broadcast_aac",
@@ -92,8 +127,8 @@ object AudioPresetValidator {
             description = "Compressed streaming standard encoded by Android OS",
             sampleRate = 48000,
             channelCount = 2,
-            bitDepth = "16-bit",
-            format = AudioEncodingFormat.AAC_LC
+            bitDepth = null,
+            format = AudioFormatType.AAC
         ),
         AudioPreset(
             id = "preset_voice_opus",
@@ -101,14 +136,38 @@ object AudioPresetValidator {
             description = "Low-bitrate speech codec encoded by Android OS",
             sampleRate = 48000,
             channelCount = 1,
-            bitDepth = "16-bit",
-            format = AudioEncodingFormat.OPUS
+            bitDepth = null,
+            format = AudioFormatType.OPUS
         )
     )
 
     fun validate(preset: AudioPreset, device: AudioInputDevice?): CompatibilityResult {
         val reasons = mutableListOf<String>()
 
+        // 1. FORMAT & BIT-DEPTH COMPATIBILITY CHECK
+        if (preset.format.supportedBitDepths.isNotEmpty()) {
+            if (preset.bitDepth == null) {
+                reasons.add("${preset.format.label} requires an explicit bit-depth selection.")
+            } else if (preset.bitDepth !in preset.format.supportedBitDepths) {
+                reasons.add(
+                    "${preset.format.label} does not support ${preset.bitDepth.label}. Supported: ${preset.format.supportedBitDepths.joinToString { it.label }}"
+                )
+            }
+        } else {
+            if (preset.bitDepth != null) {
+                reasons.add("${preset.format.label} is a lossy compressed codec; bit-depth selection is not applicable.")
+            }
+        }
+
+        // 2. CODEC SPECIFIC CONSTRAINTS (e.g. Opus sample rates)
+        if (preset.format == AudioFormatType.OPUS) {
+            val validOpusRates = listOf(8000, 12000, 16000, 24000, 48000)
+            if (preset.sampleRate !in validOpusRates) {
+                reasons.add("Opus encoder requires 8k, 12k, 16k, 24k, or 48kHz (selected: ${preset.sampleRate}Hz)")
+            }
+        }
+
+        // 3. HARDWARE MIC CHECK: Sampling rate
         if (device != null && !device.isUnconstrained && device.sampleRates.isNotEmpty()) {
             if (preset.sampleRate !in device.sampleRates) {
                 reasons.add(
@@ -117,6 +176,7 @@ object AudioPresetValidator {
             }
         }
 
+        // 4. HARDWARE MIC CHECK: Channel layout
         if (device != null && device.channelCounts.isNotEmpty()) {
             if (preset.channelCount !in device.channelCounts) {
                 val label = if (preset.channelCount == 1) "Mono" else if (preset.channelCount == 2) "Stereo" else "${preset.channelCount} Channels"
@@ -126,6 +186,7 @@ object AudioPresetValidator {
             }
         }
 
+        // 5. SYSTEM OS CODEC CHECK
         if (!preset.format.isRawPcm && preset.format.mimeType != null) {
             val hasSystemEncoder = checkSystemEncoderSupport(preset.format.mimeType)
             if (!hasSystemEncoder) {

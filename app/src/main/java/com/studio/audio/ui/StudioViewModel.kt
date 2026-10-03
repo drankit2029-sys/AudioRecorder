@@ -29,7 +29,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _selectedDevice = MutableStateFlow<AudioInputDevice?>(null)
     val selectedDevice: StateFlow<AudioInputDevice?> = _selectedDevice.asStateFlow()
 
-    private val _selectedPreset = MutableStateFlow(AudioPresetValidator.POPULAR_PRESETS.first())
+    private val _selectedPreset = MutableStateFlow<AudioPreset>(AudioPresetValidator.POPULAR_PRESETS.first())
     val selectedPreset: StateFlow<AudioPreset> = _selectedPreset.asStateFlow()
 
     private val _customPreset = MutableStateFlow(
@@ -39,8 +39,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             description = "User-configured audio attributes",
             sampleRate = 48000,
             channelCount = 2,
-            bitDepth = "24-bit",
-            format = AudioEncodingFormat.WAV_PCM_24,
+            bitDepth = BitDepth.BIT_24,
+            format = AudioFormatType.WAV,
             isCustom = true
         )
     )
@@ -110,8 +110,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateCustomPreset(
         sampleRate: Int,
         channelCount: Int,
-        bitDepth: String,
-        format: AudioEncodingFormat
+        bitDepth: BitDepth?,
+        format: AudioFormatType
     ) {
         val updated = _customPreset.value.copy(
             sampleRate = sampleRate,

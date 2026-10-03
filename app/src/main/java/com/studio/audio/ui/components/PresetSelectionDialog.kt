@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -24,7 +25,7 @@ fun PresetSelectionDialog(
     customPreset: AudioPreset,
     selectedDevice: AudioInputDevice?,
     onPresetSelected: (AudioPreset) -> Unit,
-    onSaveCustomPreset: (Int, Int, String, AudioEncodingFormat) -> Unit,
+    onSaveCustomPreset: (Int, Int, BitDepth?, AudioFormatType) -> Unit,
     onDismiss: () -> Unit
 ) {
     var showCustomEditor by remember { mutableStateOf(false) }
@@ -121,7 +122,7 @@ private fun PresetCardItem(
                         color = if (isSupported) Color.White else Color.DarkGray
                     )
                     Text(
-                        text = "${preset.sampleRate}Hz • ${if (preset.channelCount == 1) "Mono" else "Stereo"} • ${preset.bitDepth} • ${preset.format.extension.uppercase()}",
+                        text = "${preset.sampleRate}Hz • ${if (preset.channelCount == 1) "Mono" else "Stereo"} • ${preset.displayBitDepth} • ${preset.format.extension.uppercase()}",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (isSupported) Color.LightGray else Color.DarkGray
                     )
@@ -166,7 +167,7 @@ private fun PresetCardItem(
                         )
                     }
                     Spacer(modifier = Modifier.height(4.dp))
-                    for (reason in validation.unsupportedReasons) {
+                    validation.unsupportedReasons.forEach { reason ->
                         Text(
                             text = "• $reason",
                             color = Color(0xFFFF5252),
@@ -179,24 +180,36 @@ private fun PresetCardItem(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomPresetEditorDialog(
     initialPreset: AudioPreset,
     selectedDevice: AudioInputDevice?,
-    onSave: (Int, Int, String, AudioEncodingFormat) -> Unit,
+    onSave: (Int, Int, BitDepth?, AudioFormatType) -> Unit,
     onBack: () -> Unit
 ) {
+    var format by remember { mutableStateOf(initialPreset.format) }
+    var bitDepth by remember { mutableStateOf(initialPreset.bitDepth) }
     var sampleRate by remember { mutableIntStateOf(initialPreset.sampleRate) }
     var channelCount by remember { mutableIntStateOf(initialPreset.channelCount) }
-    var bitDepth by remember { mutableStateOf(initialPreset.bitDepth) }
-    var format by remember { mutableStateOf(initialPreset.format) }
+
+    // When the format changes, dynamically snap bit-depth to a valid state
+    fun onFormatSelected(newFormat: AudioFormatType) {
+        format = newFormat
+        if (newFormat.supportedBitDepths.isEmpty()) {
+            bitDepth = null
+        } else if (bitDepth == null || bitDepth !in newFormat.supportedBitDepths) {
+            bitDepth = newFormat.supportedBitDepths.first()
+        }
+        if (newFormat == AudioFormatType.OPUS && sampleRate !in listOf(8000, 12000, 16000, 24000, 48000)) {
+            sampleRate = 48000
+        }
+    }
 
     val testPreset = remember(sampleRate, channelCount, bitDepth, format) {
         AudioPreset(
             id = "test_custom",
-            name = "Preview Custom",
-            description = "",
+            name = "Custom Preset",
+            description = "Configured format",
             sampleRate = sampleRate,
             channelCount = channelCount,
             bitDepth = bitDepth,
@@ -212,18 +225,19 @@ private fun CustomPresetEditorDialog(
         title = { Text("Configure Custom Preset") },
         text = {
             LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                // 1. Container / Codec Format
                 item {
-                    Text("Encoding Format", style = MaterialTheme.typography.labelMedium, color = Color.White)
+                    Text("Container / Codec", style = MaterialTheme.typography.labelMedium, color = Color.White)
                     Spacer(modifier = Modifier.height(4.dp))
-                    for (fmt in AudioEncodingFormat.values()) {
+                    AudioFormatType.values().forEach { fmt ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { format = fmt }
+                                .clickable { onFormatSelected(fmt) }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            RadioButton(selected = format == fmt, onClick = { format = fmt })
+                            RadioButton(selected = format == fmt, onClick = { onFormatSelected(fmt) })
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(text = fmt.label, style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
                         }
@@ -231,6 +245,50 @@ private fun CustomPresetEditorDialog(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2E))
                 }
 
+                // 2. Bit Depth (Strictly contextual to the selected format)
+                item {
+                    Text("Bit Depth", style = MaterialTheme.typography.labelMedium, color = Color.White)
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    if (format.supportedBitDepths.isEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF242426), RoundedCornerShape(6.dp))
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = Color(0xFF90CAF9),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Bit-depth is handled automatically by ${format.extension.uppercase()}'s perceptual encoder.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.LightGray
+                            )
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            format.supportedBitDepths.forEach { depth ->
+                                FilterChip(
+                                    selected = bitDepth == depth,
+                                    onClick = { bitDepth = depth },
+                                    label = { Text(depth.label) }
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2E))
+                }
+
+                // 3. Sampling Rate
                 item {
                     Text("Sampling Rate", style = MaterialTheme.typography.labelMedium, color = Color.White)
                     Spacer(modifier = Modifier.height(6.dp))
@@ -238,7 +296,12 @@ private fun CustomPresetEditorDialog(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        for (rate in listOf(44100, 48000, 96000, 192000)) {
+                        val availableRates = if (format == AudioFormatType.OPUS) {
+                            listOf(16000, 24000, 48000)
+                        } else {
+                            listOf(44100, 48000, 96000, 192000)
+                        }
+                        availableRates.forEach { rate ->
                             FilterChip(
                                 selected = sampleRate == rate,
                                 onClick = { sampleRate = rate },
@@ -249,6 +312,7 @@ private fun CustomPresetEditorDialog(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2E))
                 }
 
+                // 4. Channels
                 item {
                     Text("Channels", style = MaterialTheme.typography.labelMedium, color = Color.White)
                     Spacer(modifier = Modifier.height(6.dp))
@@ -256,34 +320,17 @@ private fun CustomPresetEditorDialog(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        for ((count, label) in AudioPresetValidator.AVAILABLE_CHANNEL_COUNTS) {
+                        AudioPresetValidator.AVAILABLE_CHANNEL_COUNTS.forEach { (count, _) ->
                             FilterChip(
                                 selected = channelCount == count,
                                 onClick = { channelCount = count },
-                                label = { Text(label) }
-                            )
-                        }
-                    }
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2E))
-                }
-
-                item {
-                    Text("Bit Depth", style = MaterialTheme.typography.labelMedium, color = Color.White)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        for (depth in AudioPresetValidator.AVAILABLE_BIT_DEPTHS) {
-                            FilterChip(
-                                selected = bitDepth == depth,
-                                onClick = { bitDepth = depth },
-                                label = { Text(depth) }
+                                label = { Text(if (count == 1) "Mono" else if (count == 2) "Stereo" else "${count}ch") }
                             )
                         }
                     }
                 }
 
+                // Real-time Error / Incompatibility Alerts
                 if (!validation.isSupported) {
                     item {
                         Spacer(modifier = Modifier.height(10.dp))
@@ -294,12 +341,12 @@ private fun CustomPresetEditorDialog(
                                 .padding(8.dp)
                         ) {
                             Text(
-                                text = "Current hardware cannot support these parameters:",
+                                text = "⚠️ Invalid configuration or hardware mismatch:",
                                 color = Color(0xFFFF8A80),
                                 style = MaterialTheme.typography.labelSmall
                             )
                             Spacer(modifier = Modifier.height(4.dp))
-                            for (reason in validation.unsupportedReasons) {
+                            validation.unsupportedReasons.forEach { reason ->
                                 Text(
                                     text = "• $reason",
                                     color = Color(0xFFFF5252),
