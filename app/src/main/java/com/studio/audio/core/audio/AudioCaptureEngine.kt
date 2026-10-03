@@ -11,6 +11,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
+sealed class RecordingError {
+    data class InitializationFailed(val message: String) : RecordingError()
+    data class ReadError(val code: Int, val message: String) : RecordingError()
+    data class DeviceDisconnected(val deviceName: String) : RecordingError()
+}
+
 class AudioCaptureEngine(
     private val diskWriter: AudioDiskWriter
 ) {
@@ -27,12 +33,13 @@ class AudioCaptureEngine(
         targetDevice: AudioDeviceInfo?,
         sampleRate: Int = 48000,
         destinationFile: File,
-        append: Boolean = false
+        append: Boolean = false,
+        onError: (RecordingError) -> Unit
     ) {
         if (isRecording.get()) return
 
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val encoding = AudioFormat.ENCODING_PCM_FLOAT // 32-bit IEEE 754 Float
+        val encoding = AudioFormat.ENCODING_PCM_FLOAT
 
         val format = AudioFormat.Builder()
             .setEncoding(encoding)
@@ -41,24 +48,50 @@ class AudioCaptureEngine(
             .build()
 
         val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, encoding)
+        if (minBufferSize <= 0) {
+            onError(RecordingError.InitializationFailed("Invalid audio hardware parameters: rate=$sampleRate"))
+            return
+        }
+
         val bufferSizeBytes = (minBufferSize * 2).coerceAtLeast(8192)
 
-        val record = AudioRecord.Builder()
-            .setAudioSource(MediaRecorder.AudioSource.MIC)
-            .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSizeBytes)
-            .build()
+        val record = try {
+            AudioRecord.Builder()
+                .setAudioSource(MediaRecorder.AudioSource.MIC)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(bufferSizeBytes)
+                .build()
+        } catch (e: Exception) {
+            onError(RecordingError.InitializationFailed(e.message ?: "Failed to allocate AudioRecord"))
+            return
+        }
 
-        record.preferredDevice = targetDevice
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            onError(RecordingError.InitializationFailed("AudioRecord returned STATE_UNINITIALIZED from hardware HAL"))
+            return
+        }
+
+        if (targetDevice != null) {
+            record.preferredDevice = targetDevice
+        }
         currentDevice = targetDevice
 
         audioRecord = record
         diskWriter.start(destinationFile, append = append)
         isRecording.set(true)
-        record.startRecording()
+
+        try {
+            record.startRecording()
+        } catch (e: IllegalStateException) {
+            record.release()
+            audioRecord = null
+            isRecording.set(false)
+            onError(RecordingError.InitializationFailed("startRecording() failed: mic might be locked by another application"))
+            return
+        }
 
         recordingJob = scope.launch(Dispatchers.IO) {
-            // Using a direct ByteBuffer to stream float bytes directly to disk
             val byteBuffer = ByteBuffer.allocateDirect(bufferSizeBytes).order(ByteOrder.LITTLE_ENDIAN)
             val byteArray = ByteArray(bufferSizeBytes)
 
@@ -70,6 +103,17 @@ class AudioCaptureEngine(
                     byteBuffer.position(0)
                     byteBuffer.get(byteArray, 0, bytesRead)
                     diskWriter.write(byteArray, 0, bytesRead)
+                } else if (bytesRead < 0) {
+                    val errorMsg = when (bytesRead) {
+                        AudioRecord.ERROR_INVALID_OPERATION -> "ERROR_INVALID_OPERATION: AudioRecord state corrupt"
+                        AudioRecord.ERROR_BAD_VALUE -> "ERROR_BAD_VALUE: Bad parameter passed to HAL"
+                        AudioRecord.ERROR_DEAD_OBJECT -> "ERROR_DEAD_OBJECT: AudioFlinger died or client was preempted"
+                        else -> "AudioRecord hardware read failed with code $bytesRead"
+                    }
+                    withContext(Dispatchers.Main) {
+                        onError(RecordingError.ReadError(bytesRead, errorMsg))
+                    }
+                    break
                 }
             }
         }
@@ -89,7 +133,9 @@ class AudioCaptureEngine(
 
         audioRecord?.apply {
             try {
-                stop()
+                if (recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    stop()
+                }
                 release()
             } catch (e: Exception) {
                 e.printStackTrace()

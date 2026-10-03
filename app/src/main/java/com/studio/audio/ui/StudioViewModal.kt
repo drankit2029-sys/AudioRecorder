@@ -1,6 +1,7 @@
 package com.studio.audio.ui
 
 import android.app.Application
+import android.media.AudioDeviceInfo
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.studio.audio.core.audio.*
@@ -11,11 +12,6 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-enum class AppDestination {
-    STUDIO,
-    LIBRARY
-}
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -33,7 +29,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _selectedDevice = MutableStateFlow<AudioInputDevice?>(null)
     val selectedDevice: StateFlow<AudioInputDevice?> = _selectedDevice.asStateFlow()
 
-    // Preset Selection State (Decoupled from recording engine for now)
     private val _selectedPreset = MutableStateFlow<AudioPreset>(AudioPresetValidator.POPULAR_PRESETS.first())
     val selectedPreset: StateFlow<AudioPreset> = _selectedPreset.asStateFlow()
 
@@ -45,7 +40,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             sampleRate = 48000,
             channelCount = 2,
             bitDepth = "24-bit",
-            format = AudioEncodingFormat.PCM_24BIT,
+            format = AudioEncodingFormat.WAV_PCM_24,
             isCustom = true
         )
     )
@@ -63,12 +58,50 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _savedRecordings = MutableStateFlow<List<SavedRecording>>(emptyList())
     val savedRecordings: StateFlow<List<SavedRecording>> = _savedRecordings.asStateFlow()
 
+    // Hardware Error / Disconnection Alert
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     private var activeRecordingFile: File? = null
 
+    private val routingManager = AudioRoutingManager(
+        context = application,
+        onDeviceListChanged = { refreshDevices() },
+        onActiveDeviceDisconnected = { disconnectedDev -> handleActiveDeviceDisconnected(disconnectedDev) }
+    )
+
     init {
+        routingManager.startMonitoring()
         refreshDevices()
         refreshLibrary()
         checkForInterruptedSession()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        routingManager.stopMonitoring()
+    }
+
+    private fun handleActiveDeviceDisconnected(device: AudioDeviceInfo) {
+        if (_isRecording.value) {
+            val stoppedFile = captureEngine.stopRecording()
+            routingManager.teardownRouting()
+            _isRecording.value = false
+            activeRecordingFile = null
+
+            _errorMessage.value = "Active microphone '${device.productName}' was disconnected. Recording stopped and preserved."
+
+            if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
+                _pendingSaveFile.value = stoppedFile
+            } else {
+                recoveryManager.markSessionCompleted()
+            }
+        }
+        refreshDevices()
+    }
+
+    fun dismissError() {
+        _errorMessage.value = null
     }
 
     fun selectPreset(preset: AudioPreset) {
@@ -89,10 +122,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
         _customPreset.value = updated
         _selectedPreset.value = updated
-    }
-
-    fun validatePreset(preset: AudioPreset): CompatibilityResult {
-        return AudioPresetValidator.validate(preset, _selectedDevice.value)
     }
 
     fun navigateTo(destination: AppDestination) {
@@ -126,6 +155,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun selectDevice(device: AudioInputDevice) {
         _selectedDevice.value = device
         if (_isRecording.value) {
+            routingManager.setupRoutingForDevice(device.rawDeviceInfo)
             captureEngine.switchDevice(device.rawDeviceInfo)
         }
     }
@@ -133,6 +163,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun toggleRecording() {
         if (_isRecording.value) {
             val stoppedFile = captureEngine.stopRecording()
+            routingManager.teardownRouting()
             _isRecording.value = false
             activeRecordingFile = null
             if (stoppedFile != null && stoppedFile.exists() && stoppedFile.length() > 0) {
@@ -180,15 +211,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun startSession(destination: File, append: Boolean) {
+        val device = _selectedDevice.value?.rawDeviceInfo
+        routingManager.setupRoutingForDevice(device)
+
         activeRecordingFile = destination
         val sampleRate = 48000
         recoveryManager.markSessionActive(destination, sampleRate)
+
         captureEngine.startRecording(
             scope = viewModelScope,
-            targetDevice = _selectedDevice.value?.rawDeviceInfo,
+            targetDevice = device,
             sampleRate = sampleRate,
             destinationFile = destination,
-            append = append
+            append = append,
+            onError = { err ->
+                captureEngine.stopRecording()
+                routingManager.teardownRouting()
+                _isRecording.value = false
+                val msg = when (err) {
+                    is RecordingError.InitializationFailed -> err.message
+                    is RecordingError.ReadError -> err.message
+                    is RecordingError.DeviceDisconnected -> "Mic disconnected: ${err.deviceName}"
+                }
+                _errorMessage.value = msg
+            }
         )
         _isRecording.value = true
     }

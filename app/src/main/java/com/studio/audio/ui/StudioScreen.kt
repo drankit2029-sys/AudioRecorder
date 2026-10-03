@@ -38,6 +38,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     val interruptedSession by viewModel.interruptedSession.collectAsState()
     val pendingSaveFile by viewModel.pendingSaveFile.collectAsState()
     val savedRecordings by viewModel.savedRecordings.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
 
     var showDeviceDialog by remember { mutableStateOf(false) }
     var showPresetDialog by remember { mutableStateOf(false) }
@@ -89,7 +90,21 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
-    // 1. Preset Selection & Custom Builder Dialog
+    // Hardware Error / Disconnection Alert
+    errorMessage?.let { errorText ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissError() },
+            title = { Text("Hardware Alert") },
+            text = { Text(errorText) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissError() }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    // Preset Selection Dialog
     if (showPresetDialog) {
         PresetSelectionDialog(
             currentPreset = selectedPreset,
@@ -106,7 +121,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 2. Audio Input Device Selector Dialog
+    // Audio Input Device Selector Dialog
     if (showDeviceDialog) {
         DeviceSelectionDialog(
             devices = devices,
@@ -119,7 +134,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 3. Save Take Name Dialog
+    // Save Take Dialog
     pendingSaveFile?.let { file ->
         SaveTakeDialog(
             tempFile = file,
@@ -128,7 +143,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         )
     }
 
-    // 4. Interrupted Take Recovery Dialog
+    // Interrupted Take Recovery Dialog
     interruptedSession?.let { session ->
         RecoveryPromptDialog(
             session = session,
@@ -148,7 +163,6 @@ private fun StudioContent(
     onOpenPresetSelector: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // 1. Teleprompter Container
         SectionPlaceholder(
             title = "1. Teleprompter Container (Collapsible / Mirror)",
             modifier = Modifier
@@ -156,7 +170,6 @@ private fun StudioContent(
                 .weight(0.8f)
         )
 
-        // 2. Waveform Visualizer
         SectionPlaceholder(
             title = "2. Waveform Visualizer",
             modifier = Modifier
@@ -164,7 +177,6 @@ private fun StudioContent(
                 .weight(1.2f)
         )
 
-        // 3. Control & Metrics Strip (Blueprint Row 1 Pills)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -180,7 +192,6 @@ private fun StudioContent(
             )
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Row 1 Pills: Hardware Selector + Preset Selector Card
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -309,8 +320,9 @@ private fun DeviceSelectionDialog(
                                 color = if (isSelected) Color(0xFF1E88E5) else Color.White,
                                 style = MaterialTheme.typography.bodyMedium
                             )
+                            val ratesText = if (device.isUnconstrained) "Arbitrary / System Managed" else device.sampleRates.joinToString { "${it}Hz" }
                             Text(
-                                text = "Supported: ${device.sampleRates.joinToString { "${it}Hz" }}",
+                                text = "Supported: $ratesText",
                                 color = Color.Gray,
                                 style = MaterialTheme.typography.bodySmall
                             )
