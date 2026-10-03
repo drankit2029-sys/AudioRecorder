@@ -255,7 +255,8 @@ private fun getHalTypeConstantName(type: Int): String {
         AudioDeviceInfo.TYPE_LINE_ANALOG -> "TYPE_LINE_ANALOG"
         AudioDeviceInfo.TYPE_LINE_DIGITAL -> "TYPE_LINE_DIGITAL"
         AudioDeviceInfo.TYPE_TELEPHONY -> "TYPE_TELEPHONY"
-        AudioDeviceInfo.TYPE_ECHO_REFERENCE -> "TYPE_ECHO_REFERENCE"
-        else -> "TYPE_UNKNOWN_$type"
+        25 -> "TYPE_REMOTE_SUBMIX"
+        28 -> "TYPE_ECHO_REFERENCE"
+        else -> "TYPE_CODE_$type"
     }
 }
