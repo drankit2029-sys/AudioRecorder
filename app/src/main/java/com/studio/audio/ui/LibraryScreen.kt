@@ -90,7 +90,7 @@ fun LibraryScreen(
     }
 }
 
-@@Composable
+@Composable
 private fun RecordingItemRow(
     recording: SavedRecording,
     isCurrentTrack: Boolean,
