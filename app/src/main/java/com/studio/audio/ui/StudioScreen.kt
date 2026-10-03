@@ -1,6 +1,16 @@
 package com.studio.audio.ui
 
-import androidx.compose.animation.AnimatedVisibility
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,6 +23,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
@@ -23,10 +34,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studio.audio.core.audio.AudioInputDevice
 import com.studio.audio.core.audio.AudioPreset
@@ -40,6 +54,9 @@ import java.util.Locale
 
 @Composable
 fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
+    val context = LocalContext.current
+    val activity = context as? Activity
+
     val destination by viewModel.currentDestination.collectAsState()
     val devices by viewModel.availableDevices.collectAsState()
     val selectedDevice by viewModel.selectedDevice.collectAsState()
@@ -64,6 +81,81 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     var showDeviceDialog by remember { mutableStateOf(false) }
     var showPresetDialog by remember { mutableStateOf(false) }
 
+    // Permission Prompt State
+    var permissionsPromptList by remember { mutableStateOf<List<String>?>(null) }
+    var isPermanentlyDenied by remember { mutableStateOf(false) }
+
+    fun checkMissingPermissions(): List<String> {
+        val missing = mutableListOf<String>()
+
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.RECORD_AUDIO)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val isBt = selectedDevice?.let {
+            it.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            it.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+        } ?: false
+
+        if (isBt && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+
+        return missing
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val stillMissing = checkMissingPermissions()
+        if (stillMissing.isEmpty()) {
+            permissionsPromptList = null
+            requestBatteryExemptionIfNecessary(context)
+            viewModel.startRecordingTake()
+        } else {
+            // Check if permanently denied ("Don't ask again")
+            val permanent = activity?.let { act ->
+                stillMissing.any { perm -> !ActivityCompat.shouldShowRequestPermissionRationale(act, perm) }
+            } ?: false
+            isPermanentlyDenied = permanent
+            permissionsPromptList = null
+        }
+    }
+
+    fun handleRecordClick() {
+        if (destination != AppDestination.STUDIO) {
+            viewModel.navigateTo(AppDestination.STUDIO)
+        }
+
+        val missing = checkMissingPermissions()
+        if (missing.isEmpty()) {
+            requestBatteryExemptionIfNecessary(context)
+            viewModel.startRecordingTake()
+        } else {
+            val permanent = activity?.let { act ->
+                missing.any { perm ->
+                    ContextCompat.checkSelfPermission(act, perm) != PackageManager.PERMISSION_GRANTED &&
+                    !ActivityCompat.shouldShowRequestPermissionRationale(act, perm)
+                }
+            } ?: false
+
+            isPermanentlyDenied = permanent
+            permissionsPromptList = missing
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -74,12 +166,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
                 isPaused = isPaused,
                 onLibraryClick = { viewModel.navigateTo(AppDestination.LIBRARY) },
                 onStudioClick = { viewModel.navigateTo(AppDestination.STUDIO) },
-                onRecordClick = {
-                    if (destination != AppDestination.STUDIO) {
-                        viewModel.navigateTo(AppDestination.STUDIO)
-                    }
-                    viewModel.startRecordingTake()
-                },
+                onRecordClick = { handleRecordClick() },
                 onPauseResumeClick = { viewModel.togglePauseResume() },
                 onSaveClick = { viewModel.stopAndSaveRecording() }
             )
@@ -130,6 +217,29 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
+    // Permission Explanation & Confirmation Prompt
+    permissionsPromptList?.let { missingList ->
+        PermissionExplanationDialog(
+            missingPermissions = missingList,
+            isPermanentlyDenied = isPermanentlyDenied,
+            onConfirm = {
+                permissionsPromptList = null
+                if (isPermanentlyDenied) {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    context.startActivity(intent)
+                } else {
+                    permissionLauncher.launch(missingList.toTypedArray())
+                }
+            },
+            onDismiss = {
+                // User rejected: dismiss cleanly, action is re-prompted on next record click
+                permissionsPromptList = null
+            }
+        )
+    }
+
     conversionProgress?.let { progress ->
         ConversionProgressDialog(progress = progress)
     }
@@ -167,9 +277,19 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         DeviceSelectionDialog(
             devices = devices,
             currentDevice = selectedDevice,
-            onDeviceSelected = {
-                viewModel.selectDevice(it)
+            onDeviceSelected = { device ->
+                viewModel.selectDevice(device)
                 showDeviceDialog = false
+
+                // If user selected Bluetooth, verify BT permission immediately
+                if (device.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    device.rawDeviceInfo.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+                ) {
+                    val missing = checkMissingPermissions()
+                    if (missing.contains(Manifest.permission.BLUETOOTH_CONNECT)) {
+                        permissionsPromptList = listOf(Manifest.permission.BLUETOOTH_CONNECT)
+                    }
+                }
             },
             onDismiss = { showDeviceDialog = false }
         )
@@ -194,6 +314,121 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
 }
 
 @Composable
+private fun PermissionExplanationDialog(
+    missingPermissions: List<String>,
+    isPermanentlyDenied: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val micNeeded = missingPermissions.contains(Manifest.permission.RECORD_AUDIO)
+    val notifNeeded = missingPermissions.contains(Manifest.permission.POST_NOTIFICATIONS)
+    val btNeeded = missingPermissions.contains(Manifest.permission.BLUETOOTH_CONNECT)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Security,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        title = {
+            Text(
+                text = if (isPermanentlyDenied) "Permission Access Required" else "Permissions Required",
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Studio needs the following permissions to capture and safeguard your recording:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+
+                if (micNeeded) {
+                    PermissionReasonRow(
+                        title = "Microphone Access",
+                        description = "Direct hardware access to capture uncompressed 32-bit float audio."
+                    )
+                }
+
+                if (notifNeeded) {
+                    PermissionReasonRow(
+                        title = "Recording Notification",
+                        description = "Maintains the foreground audio service so Android won't mute or kill long takes when the screen turns off."
+                    )
+                }
+
+                if (btNeeded) {
+                    PermissionReasonRow(
+                        title = "Bluetooth Connection",
+                        description = "Enables communication with wireless headsets over the SCO audio link."
+                    )
+                }
+
+                if (isPermanentlyDenied) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Access was previously denied. You can enable these permissions in Android App Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFFA000)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text(if (isPermanentlyDenied) "Open Settings" else "Allow & Continue")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Not Now", color = Color.Gray)
+            }
+        }
+    )
+}
+
+@Composable
+private fun PermissionReasonRow(title: String, description: String) {
+    Surface(
+        color = Color(0xFF242426),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = Color.White
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+        }
+    }
+}
+
+private fun requestBatteryExemptionIfNecessary(context: Context) {
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+    if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${context.packageName}")
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {}
+    }
+}
+
+@Composable
 private fun StudioContent(
     isRecording: Boolean,
     isPaused: Boolean,
@@ -205,7 +440,6 @@ private fun StudioContent(
     onOpenPresetSelector: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // 1. Teleprompter Container Placeholder[cite: 1]
         SectionPlaceholder(
             title = "1. Teleprompter Container (Collapsible / Mirror)",
             modifier = Modifier
@@ -213,7 +447,6 @@ private fun StudioContent(
                 .weight(0.7f)
         )
 
-        // 2. Waveform Visualizer & Timer Area[cite: 1]
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -246,7 +479,6 @@ private fun StudioContent(
             }
         }
 
-        // 3. Control & Metrics Strip[cite: 1]
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -263,7 +495,6 @@ private fun StudioContent(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Row 1 Selectors (Locked during capture)[cite: 1]
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -373,7 +604,6 @@ private fun DbfsMeter(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Multi-zone meter bar (-60dB to 0dB)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -389,9 +619,9 @@ private fun DbfsMeter(
                     .background(
                         Brush.horizontalGradient(
                             listOf(
-                                Color(0xFF2E7D32), // Green (-60 to -18)
-                                Color(0xFFFBC02D), // Yellow (-18 to -3)
-                                Color(0xFFE53935)  // Red (-3 to 0)
+                                Color(0xFF2E7D32),
+                                Color(0xFFFBC02D),
+                                Color(0xFFE53935)
                             )
                         )
                     )
@@ -400,7 +630,6 @@ private fun DbfsMeter(
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Scale Markings
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -449,9 +678,7 @@ fun PersistentDock(
                 )
             }
 
-            // Split Action Controller
             if (!isRecording) {
-                // Idle state: Single Record FAB
                 FloatingActionButton(
                     onClick = onRecordClick,
                     containerColor = Color(0xFFE53935),
@@ -465,9 +692,7 @@ fun PersistentDock(
                     )
                 }
             } else {
-                // Active state: Split Pause & Save Buttons
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    // 1. Pause / Resume (Play) Button
                     FloatingActionButton(
                         onClick = onPauseResumeClick,
                         containerColor = if (isPaused) Color(0xFF1E88E5) else Color(0xFFFFA000),
@@ -482,7 +707,6 @@ fun PersistentDock(
                         )
                     }
 
-                    // 2. Commit / Save Button
                     FloatingActionButton(
                         onClick = onSaveClick,
                         containerColor = Color(0xFF43A047),

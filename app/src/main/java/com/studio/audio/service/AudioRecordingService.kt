@@ -30,6 +30,8 @@ class AudioRecordingService : Service() {
         super.onCreate()
         createNotificationChannel()
         acquireWakeLock()
+        // Promote to foreground immediately on creation
+        startForegroundRecording()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -57,13 +59,13 @@ class AudioRecordingService : Service() {
             "StudioAudio:RecordingWakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(4 * 60 * 60 * 1000L) // 4-hour safety ceiling
+            acquire(4 * 60 * 60 * 1000L) // 4-hour safety timeout
         }
     }
 
     private fun buildRecordingNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -74,28 +76,30 @@ class AudioRecordingService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Studio Recording Active")
-            .setContentText("Continuous high-fidelity studio recording in progress...")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentText("Capturing audio in 32-bit float...")
+            .setSmallIcon(applicationInfo.icon) // Safe application icon
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setAutoCancel(false)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
     }
 
     private fun createNotificationChannel() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Studio Active Recording",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Displays recording status and prevents background process termination"
-            setShowBadge(false)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Studio Recording Active",
+                NotificationManager.IMPORTANCE_DEFAULT // Shows in status bar
+            ).apply {
+                description = "Ongoing recording notification to prevent background termination"
+                setSound(null, null) // Silent: no chime on record start
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
         }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.createNotificationChannel(channel)
-    }
     }
 
     override fun onDestroy() {
