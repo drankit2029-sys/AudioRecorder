@@ -82,8 +82,8 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     var showDeviceDialog by remember { mutableStateOf(false) }
     var showPresetDialog by remember { mutableStateOf(false) }
 
-    var permissionsPromptList by remember { mutableStateOf<List<String>?>(null) }
-    var isPermanentlyDenied by remember { mutableStateOf(false) }
+    var permissionsExplanationList by remember { mutableStateOf<List<String>?>(null) }
+    var showSettingsRedirectDialog by remember { mutableStateOf(false) }
 
     fun checkMissingPermissions(): List<String> {
         val missing = mutableListOf<String>()
@@ -121,15 +121,21 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
     ) {
         val stillMissing = checkMissingPermissions()
         if (stillMissing.isEmpty()) {
-            permissionsPromptList = null
+            permissionsExplanationList = null
+            showSettingsRedirectDialog = false
             requestBatteryExemptionIfNecessary(context)
             viewModel.startRecordingTake()
         } else {
-            val permanent = activity?.let { act ->
-                stillMissing.any { perm -> !ActivityCompat.shouldShowRequestPermissionRationale(act, perm) }
+            val permanentlyDenied = activity?.let { act ->
+                stillMissing.any { perm ->
+                    !ActivityCompat.shouldShowRequestPermissionRationale(act, perm)
+                }
             } ?: false
-            isPermanentlyDenied = permanent
-            permissionsPromptList = null
+
+            if (permanentlyDenied) {
+                showSettingsRedirectDialog = true
+            }
+            permissionsExplanationList = null
         }
     }
 
@@ -143,15 +149,7 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             requestBatteryExemptionIfNecessary(context)
             viewModel.startRecordingTake()
         } else {
-            val permanent = activity?.let { act ->
-                missing.any { perm ->
-                    ContextCompat.checkSelfPermission(act, perm) != PackageManager.PERMISSION_GRANTED &&
-                    !ActivityCompat.shouldShowRequestPermissionRationale(act, perm)
-                }
-            } ?: false
-
-            isPermanentlyDenied = permanent
-            permissionsPromptList = missing
+            permissionsExplanationList = missing
         }
     }
 
@@ -216,23 +214,42 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
         }
     }
 
-    permissionsPromptList?.let { missingList ->
+    // Explanatory Rationale Prompt
+    permissionsExplanationList?.let { missingList ->
         PermissionExplanationDialog(
             missingPermissions = missingList,
-            isPermanentlyDenied = isPermanentlyDenied,
             onConfirm = {
-                permissionsPromptList = null
-                if (isPermanentlyDenied) {
+                val toRequest = missingList
+                permissionsExplanationList = null
+                permissionLauncher.launch(toRequest.toTypedArray())
+            },
+            onDismiss = {
+                permissionsExplanationList = null
+            }
+        )
+    }
+
+    // Permanent Denial Settings Prompt
+    if (showSettingsRedirectDialog) {
+        AlertDialog(
+            onDismissRequest = { showSettingsRedirectDialog = false },
+            title = { Text("Permission Required") },
+            text = { Text("Required audio permissions were disabled with 'Don't ask again'. Please enable them in App Settings to record.") },
+            confirmButton = {
+                Button(onClick = {
+                    showSettingsRedirectDialog = false
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.fromParts("package", context.packageName, null)
                     }
                     context.startActivity(intent)
-                } else {
-                    permissionLauncher.launch(missingList.toTypedArray())
+                }) {
+                    Text("Open Settings")
                 }
             },
-            onDismiss = {
-                permissionsPromptList = null
+            dismissButton = {
+                TextButton(onClick = { showSettingsRedirectDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
             }
         )
     }
@@ -277,18 +294,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
             onDeviceSelected = { device ->
                 viewModel.selectDevice(device)
                 showDeviceDialog = false
-
-                val isBt = device.rawDeviceInfo?.let {
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
-                } ?: false
-
-                if (isBt) {
-                    val missing = checkMissingPermissions()
-                    if (missing.contains(Manifest.permission.BLUETOOTH_CONNECT)) {
-                        permissionsPromptList = listOf(Manifest.permission.BLUETOOTH_CONNECT)
-                    }
-                }
             },
             onDismiss = { showDeviceDialog = false }
         )
@@ -315,7 +320,6 @@ fun StudioScreen(viewModel: StudioViewModel = viewModel()) {
 @Composable
 private fun PermissionExplanationDialog(
     missingPermissions: List<String>,
-    isPermanentlyDenied: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -334,7 +338,7 @@ private fun PermissionExplanationDialog(
         },
         title = {
             Text(
-                text = if (isPermanentlyDenied) "Permission Access Required" else "Permissions Required",
+                text = "Permissions Required",
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -349,14 +353,14 @@ private fun PermissionExplanationDialog(
                 if (micNeeded) {
                     PermissionReasonRow(
                         title = "Microphone Access",
-                        description = "Direct hardware access to capture uncompressed 32-bit float audio."
+                        description = "Direct hardware access to capture uncompressed audio."
                     )
                 }
 
                 if (notifNeeded) {
                     PermissionReasonRow(
                         title = "Recording Notification",
-                        description = "Maintains the foreground audio service so Android won't mute or kill long takes when the screen turns off."
+                        description = "Maintains the background service so Android won't mute or kill long takes."
                     )
                 }
 
@@ -366,15 +370,6 @@ private fun PermissionExplanationDialog(
                         description = "Enables communication with wireless headsets over the SCO audio link."
                     )
                 }
-
-                if (isPermanentlyDenied) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Access was previously denied. You can enable these permissions in Android App Settings.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFFFA000)
-                    )
-                }
             }
         },
         confirmButton = {
@@ -382,7 +377,7 @@ private fun PermissionExplanationDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
-                Text(if (isPermanentlyDenied) "Open Settings" else "Allow & Continue")
+                Text("Allow & Continue")
             }
         },
         dismissButton = {
@@ -416,14 +411,19 @@ private fun PermissionReasonRow(title: String, description: String) {
 }
 
 private fun requestBatteryExemptionIfNecessary(context: Context) {
-    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
-    if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
-        try {
+    try {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                 data = Uri.parse("package:${context.packageName}")
+                if (context !is Activity) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
             }
             context.startActivity(intent)
-        } catch (_: Exception) {}
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
 }
 

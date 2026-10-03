@@ -114,22 +114,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun startRecordingService() {
-        val context = getApplication<Application>()
-        val intent = Intent(context, AudioRecordingService::class.java)
-        recordingServiceIntent = intent
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
+        try {
+            val context = getApplication<Application>()
+            val intent = Intent(context, AudioRecordingService::class.java)
+            recordingServiceIntent = intent
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
     private fun stopRecordingService() {
-        val context = getApplication<Application>()
-        recordingServiceIntent?.let {
-            context.stopService(it)
+        try {
+            val context = getApplication<Application>()
+            recordingServiceIntent?.let {
+                context.stopService(it)
+            }
+            recordingServiceIntent = null
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        recordingServiceIntent = null
     }
 
     fun playRecording(recording: SavedRecording, startPositionMs: Long = 0L) {

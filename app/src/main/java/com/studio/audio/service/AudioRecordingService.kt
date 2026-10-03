@@ -30,7 +30,6 @@ class AudioRecordingService : Service() {
         super.onCreate()
         createNotificationChannel()
         acquireWakeLock()
-        // Promote to foreground immediately on creation
         startForegroundRecording()
     }
 
@@ -40,26 +39,34 @@ class AudioRecordingService : Service() {
     }
 
     private fun startForegroundRecording() {
-        val notification = buildRecordingNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            val notification = buildRecordingNotification()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
     private fun acquireWakeLock() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "StudioAudio:RecordingWakeLock"
-        ).apply {
-            setReferenceCounted(false)
-            acquire(4 * 60 * 60 * 1000L) // 4-hour safety timeout
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "StudioAudio:RecordingWakeLock"
+            ).apply {
+                setReferenceCounted(false)
+                acquire(4 * 60 * 60 * 1000L)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -77,7 +84,7 @@ class AudioRecordingService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Studio Recording Active")
             .setContentText("Capturing audio in 32-bit float...")
-            .setSmallIcon(applicationInfo.icon) // Safe application icon
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Standard non-adaptive icon
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -87,24 +94,32 @@ class AudioRecordingService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Studio Recording Active",
-                NotificationManager.IMPORTANCE_DEFAULT // Shows in status bar
-            ).apply {
-                description = "Ongoing recording notification to prevent background termination"
-                setSound(null, null) // Silent: no chime on record start
-                enableVibration(false)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            try {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "Studio Recording Active",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "Ongoing recording notification to prevent background termination"
+                    setSound(null, null)
+                    enableVibration(false)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                }
+                val manager = getSystemService(NotificationManager::class.java)
+                manager?.createNotificationChannel(channel)
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
         }
     }
 
     override fun onDestroy() {
-        wakeLock?.let {
-            if (it.isHeld) it.release()
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         wakeLock = null
         stopForeground(STOP_FOREGROUND_REMOVE)
