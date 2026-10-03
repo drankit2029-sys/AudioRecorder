@@ -1,3 +1,4 @@
+
 package com.studio.audio.service
 
 import android.app.Notification
@@ -90,8 +91,7 @@ class AudioRecordingService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Studio Recording Active")
             .setContentText("Capturing hardware audio in 32-bit float...")
-            // Safest standard Android system icon
-            .setSmallIcon(android.R.drawable.ic_menu_mic) 
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Reverted to valid public system icon
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -102,7 +102,6 @@ class AudioRecordingService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
-                // CRITICAL: Name changed to _v2 to break the OS cache of the old hidden channel
                 val channel = NotificationChannel(
                     CHANNEL_ID,
                     "Active Recording (Foreground)",
@@ -135,7 +134,6 @@ class AudioRecordingService : Service() {
     }
 
     companion object {
-        // Changed IDs to force Android to render a fresh, highly-visible notification
         private const val NOTIFICATION_ID = 1002
         private const val CHANNEL_ID = "studio_recording_channel_v2" 
     }
